@@ -34,7 +34,7 @@ jobs:
 
     - name: Run ruff
       shell: bash
-      run: ruff check bubbies
+      run: ruff check pupupu
 
     - name: Run ruff for tests
       shell: bash
@@ -54,7 +54,7 @@ jobs:
         --disallow-any-unimported
         --disallow-subclassing-any
         --warn-return-any
-        bubbies
+        pupupu
 
     - name: Run mypy for tests
       shell: bash

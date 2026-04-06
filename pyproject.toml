@@ -3,7 +3,7 @@ requires = ["setuptools==68.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bubbies"
+name = "pupupu"
 version = "0.0.1"
 authors = [
   { name="Evgeniy Blinov", email="zheni-b@yandex.ru" },
@@ -46,20 +46,20 @@ keywords = [
 ]
 
 [tool.setuptools.package-data]
-"bubbies" = ["py.typed"]
+"pupupu" = ["py.typed"]
 
 [tool.setuptools.packages.find]
-include = ["bubbies"]
+include = ["pupupu"]
 
 [tool.mutmut]
-paths_to_mutate=["bubbies"]
+paths_to_mutate=["pupupu"]
 
 [tool.coverage.run]
-branch = "${BUBBIES_COVERAGE_BRANCH-false}"
+branch = "${PUPUPU_COVERAGE_BRANCH-false}"
 omit = ["*tests*"]
 parallel = true
 plugins = ["coverage_pyver_pragma"]
-source = ["bubbies"]
+source = ["pupupu"]
 
 [tool.pytest.ini_options]
 norecursedirs = ["build", "mutants"]
@@ -70,5 +70,5 @@ lint.select = ["ERA001", "YTT", "ASYNC", "BLE", "B", "A", "COM", "INP", "PIE", "
 format.quote-style = "single"
 
 [project.urls]
-'Source' = 'https://github.com/mutating/bubbies'
-'Tracker' = 'https://github.com/mutating/bubbies/issues'
+'Source' = 'https://github.com/mutating/pupupu'
+'Tracker' = 'https://github.com/mutating/pupupu/issues'

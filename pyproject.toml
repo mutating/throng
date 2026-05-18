@@ -14,8 +14,8 @@ requires-python = ">=3.8"
 dependencies = [
     'suby>=0.0.4',
     'cantok>=0.0.36',
-    'pristan>=0.0.12',
-    'skelet>=0.0.19',
+    'pristan>=0.0.15',
+    'skelet>=0.0.21',
     'emptylog>=0.0.12',
 ]
 classifiers = [

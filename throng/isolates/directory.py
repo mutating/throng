@@ -5,10 +5,10 @@ from cantok import AbstractToken, DefaultToken
 from emptylog import EmptyLogger, LoggerProtocol
 from skelet import Field, Storage, for_tool
 
-from pupupu import AbstractIsolate
+from throng import AbstractIsolate
 
 
-class DirectoryIsolationConfig(Storage, sources=for_tool('pupupu')):
+class DirectoryIsolationConfig(Storage, sources=for_tool('throng')):
     venv_folder_name: str = Field('.venv')
     change_directories: bool = Field(False)
 

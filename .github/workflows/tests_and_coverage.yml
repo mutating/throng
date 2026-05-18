@@ -39,7 +39,7 @@ jobs:
     - name: Run tests and show coverage on the command line
       shell: bash
       run: |
-        pth_file="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/pupupu_coverage_process_startup.pth"
+        pth_file="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/throng_coverage_process_startup.pth"
         printf "import os; os.getenv('COVERAGE_PROCESS_START') and __import__('coverage').process_startup()\n" > "$pth_file"
         coverage erase
         COVERAGE_PROCESS_START="$PWD/pyproject.toml" coverage run -m pytest -n auto --cache-clear --assert=plain
@@ -60,9 +60,9 @@ jobs:
     - name: Run tests and show the branch coverage on the command line
       shell: bash
       run: |
-        pth_file="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/pupupu_coverage_process_startup.pth"
+        pth_file="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/throng_coverage_process_startup.pth"
         printf "import os; os.getenv('COVERAGE_PROCESS_START') and __import__('coverage').process_startup()\n" > "$pth_file"
         coverage erase
-        PUPUPU_COVERAGE_BRANCH=true COVERAGE_PROCESS_START="$PWD/pyproject.toml" coverage run -m pytest -n auto --cache-clear --assert=plain
+        THRONG_COVERAGE_BRANCH=true COVERAGE_PROCESS_START="$PWD/pyproject.toml" coverage run -m pytest -n auto --cache-clear --assert=plain
         coverage combine
         coverage report -m --fail-under=100

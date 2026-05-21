@@ -17,6 +17,7 @@ dependencies = [
     'pristan>=0.0.15',
     'skelet>=0.0.21',
     'emptylog>=0.0.12',
+    'dirstree>=0.0.6',
 ]
 classifiers = [
     "Operating System :: OS Independent",

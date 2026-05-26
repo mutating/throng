@@ -419,8 +419,7 @@ def test_temp_delete_locked_windows_directory_raises_and_can_be_retried(tmp_path
     throng = TemporaryDirectoryThrong(logger=logger, config=TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path)))
     isolate = throng.get_isolate()
     isolate_directory = isolate.directory
-    denied_path = isolate_directory if version_info >= (3, 12) else str(isolate_directory)
-    permission_error_message = f'[WinError 32] {WINDOWS_SHARING_VIOLATION_REASON}: {denied_path!r}'
+    permission_error_message = str(PermissionError(EACCES, WINDOWS_SHARING_VIOLATION_REASON, str(isolate_directory), 32))
 
     with hold_windows_path_open(
         isolate_directory,

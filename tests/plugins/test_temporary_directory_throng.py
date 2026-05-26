@@ -100,11 +100,9 @@ def test_temp_base_file(tmp_path):
     ]
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='symlink creation often requires elevated privileges on Windows')
 def test_temp_base_symlink_to_file(tmp_path):
     """Verify that a file symlink temporary base path raises and logs InvalidBaseDirectoryError."""
-    if os_name == 'nt':
-        pytest.skip('symlink creation often requires elevated privileges on Windows')
-
     target_file = tmp_path / 'file'
     target_file.write_text('content')
     symlink_path = tmp_path / 'link'
@@ -120,11 +118,9 @@ def test_temp_base_symlink_to_file(tmp_path):
     ]
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='permission mode semantics differ on Windows')
 def test_temp_base_not_writable(tmp_path, request):
     """Verify that a non-writable temporary base directory is rejected and logged where permissions apply."""
-    if os_name == 'nt':
-        pytest.skip('permission mode semantics differ on Windows')
-
     base_directory = tmp_path / 'base'
     base_directory.mkdir()
     request.addfinalizer(lambda: base_directory.chmod(S_IREAD | S_IWRITE | S_IEXEC))
@@ -343,6 +339,7 @@ def test_temp_configured_base_is_cleaned_when_isolate_is_collected(tmp_path):
     assert not isolate_directory.exists()
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='permission mode semantics differ on Windows')
 def test_temp_delete_failure_raises_and_does_not_log_success(tmp_path, request):
     """
     Verify that a natural delete permission failure is logged and retryable.
@@ -351,9 +348,6 @@ def test_temp_delete_failure_raises_and_does_not_log_success(tmp_path, request):
     text, while earlier supported versions stringify it; the operation
     contract is the same in both forms.
     """
-    if os_name == 'nt':
-        pytest.skip('permission mode semantics differ on Windows')
-
     base_directory = tmp_path / 'base'
     base_directory.mkdir()
     logger = MemoryLogger()

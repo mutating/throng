@@ -79,6 +79,21 @@ def temporary_isolate(tmp_path: Path) -> TemporaryIsolateFactory:
     return create
 
 
+def can_create_hardlinks_in_temporary_directory():
+    """Return whether this test environment supports hardlinks in its temporary filesystem."""
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        original_file = Path(temporary_directory) / 'original'
+        linked_file = Path(temporary_directory) / 'linked'
+        original_file.touch()
+
+        try:
+            link(str(original_file), str(linked_file))
+        except OSError:
+            return False
+
+        return True
+
+
 def test_run_precancelled_token_stops_before_suby(tmp_path, monkeypatch):
     """Verify that a pre-cancelled run token stops before the subprocess runner is called."""
     monkeypatch.chdir(tmp_path)
@@ -1455,11 +1470,9 @@ def test_dump_binary_file(temporary_isolate):
     assert (target.directory / 'payload.bin').read_bytes() == payload
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='symlink creation often requires elevated privileges on Windows')
 def test_dump_omits_symbolic_links_from_serialized_contents(temporary_isolate):
     """Verify that dump serializes regular file contents but does not emit symbolic-link archive members."""
-    if os_name == 'nt':
-        pytest.skip('symlink creation often requires elevated privileges on Windows')
-
     source = temporary_isolate()
     target = temporary_isolate()
     regular_file = source.directory / 'regular.txt'
@@ -1473,6 +1486,7 @@ def test_dump_omits_symbolic_links_from_serialized_contents(temporary_isolate):
     assert not (target.directory / 'symbolic.txt').exists()
 
 
+@pytest.mark.skipif(not can_create_hardlinks_in_temporary_directory(), reason='hardlinks are not supported in this temporary filesystem')
 def test_dump_serializes_hardlink_paths_as_regular_files(temporary_isolate):
     """Verify that each hardlink path is dumped as regular file data so that load can restore the archive."""
     source = temporary_isolate()
@@ -1481,10 +1495,7 @@ def test_dump_serializes_hardlink_paths_as_regular_files(temporary_isolate):
     second_file = source.directory / 'second.txt'
     first_file.write_text('content')
 
-    try:
-        link(str(first_file), str(second_file))
-    except OSError:
-        pytest.skip('hardlinks are not supported in this temporary filesystem')
+    link(str(first_file), str(second_file))
 
     dumped = source.dump()
 
@@ -1497,11 +1508,9 @@ def test_dump_serializes_hardlink_paths_as_regular_files(temporary_isolate):
     assert read_tree(target.directory) == {'first.txt': b'content', 'second.txt': b'content'}
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='POSIX named pipes are not available on Windows')
 def test_dump_omits_named_pipes_from_serialized_contents(temporary_isolate):
     """Verify that dump omits a POSIX named pipe because snapshots contain regular file data only."""
-    if os_name == 'nt':
-        pytest.skip('POSIX named pipes are not available on Windows')
-
     source = temporary_isolate()
     target = temporary_isolate()
     kept_file = source.directory / 'regular.txt'
@@ -1515,11 +1524,9 @@ def test_dump_omits_named_pipes_from_serialized_contents(temporary_isolate):
     assert not (target.directory / 'ignored.pipe').exists()
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='POSIX mode expectations do not apply on Windows')
 def test_dump_preserves_ordinary_permission_mode_where_practical(temporary_isolate):
     """Verify that dump/load preserves complete ordinary POSIX permission bits while retaining executable status."""
-    if os_name == 'nt':
-        pytest.skip('POSIX mode expectations do not apply on Windows')
-
     source = temporary_isolate()
     target = temporary_isolate()
     script = source.directory / 'script.sh'
@@ -1532,11 +1539,9 @@ def test_dump_preserves_ordinary_permission_mode_where_practical(temporary_isola
     assert S_IMODE((target.directory / 'script.sh').stat().st_mode) == expected_mode
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='POSIX mode expectations do not apply on Windows')
 def test_load_masks_special_permission_bits(temporary_isolate):
     """Verify that load strips special permission bits while preserving ordinary permissions."""
-    if os_name == 'nt':
-        pytest.skip('POSIX mode expectations do not apply on Windows')
-
     isolate = temporary_isolate()
     special_bits = S_ISUID | S_ISGID | S_ISVTX
     mode = special_bits | S_IRWXU
@@ -1683,11 +1688,9 @@ def test_load_preserves_empty_excluded_venv(temporary_isolate):
     assert (isolate.directory / 'fresh.txt').read_text() == 'fresh'
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='POSIX named pipes are not available on Windows')
 def test_load_preserves_excluded_named_pipe(temporary_isolate):
     """Verify that load leaves a pre-existing excluded POSIX named pipe unchanged."""
-    if os_name == 'nt':
-        pytest.skip('POSIX named pipes are not available on Windows')
-
     isolate = temporary_isolate(dump_exclude=['kept.pipe'])
     kept_pipe = isolate.directory / 'kept.pipe'
     run_process(['mkfifo', str(kept_pipe)], check=True)
@@ -1698,11 +1701,9 @@ def test_load_preserves_excluded_named_pipe(temporary_isolate):
     assert (isolate.directory / 'fresh.txt').read_text() == 'fresh'
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='symlink creation often requires elevated privileges on Windows')
 def test_load_preserves_excluded_symbolic_link(tmp_path, temporary_isolate):
     """Verify that load retains an excluded symbolic link and its existing external target."""
-    if os_name == 'nt':
-        pytest.skip('symlink creation often requires elevated privileges on Windows')
-
     external_target = tmp_path / 'external.txt'
     external_target.write_text('outside')
     isolate = temporary_isolate(dump_exclude=['kept-link'])
@@ -2354,11 +2355,9 @@ def test_load_tempdir_creation_failure_is_wrapped_and_logged(tmp_path, monkeypat
     assert [str(call.message) for call in logger.data.exception] == ['Archive unpack failed: cannot create temporary load directories: Not a directory.']
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='permission mode semantics differ on Windows')
 def test_load_permission_denied_write(request, temporary_isolate):
     """Verify that a write failure reports only genuinely unrestored paths and retains untouched old data."""
-    if os_name == 'nt':
-        pytest.skip('permission mode semantics differ on Windows')
-
     isolate = temporary_isolate()
     (isolate.directory / 'old.txt').write_text('old')
     request.addfinalizer(lambda: isolate.directory.chmod(S_IREAD | S_IWRITE | S_IXUSR))
@@ -2374,11 +2373,9 @@ def test_load_permission_denied_write(request, temporary_isolate):
     assert_any_message_contains(logger.data.exception, 'archive', 'failed')
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='permission mode semantics differ on Windows')
 def test_dump_permission_denied_read(request, temporary_isolate):
     """Verify that a read failure during dump propagates the read error and logs the failure."""
-    if os_name == 'nt':
-        pytest.skip('permission mode semantics differ on Windows')
-
     isolate = temporary_isolate()
     unreadable = isolate.directory / 'unreadable.txt'
     unreadable.write_text('secret')

@@ -41,6 +41,8 @@ from throng.plugins.temporary_directory_throng import (
     TemporaryDirectoryThrong,
 )
 
+VENV_PYTHON_RELATIVE_PATH = Path('Scripts') / 'python.exe' if os_name == 'nt' else Path('bin') / 'python'
+
 
 class TemporaryIsolateFactory(Protocol):
     def __call__(
@@ -526,7 +528,9 @@ def test_run_missing_isolate_directory_normalizes_wrong_directory_error(tmp_path
     ).get_isolate()
     remove_tree(isolate.directory)
 
-    with pytest.raises(CommandExecutionError, match=match(f"The directory '{isolate.directory}' does not exist.")) as raised:
+    expected_message = f'The directory {str(isolate.directory)!r} does not exist.'
+
+    with pytest.raises(CommandExecutionError, match=match(expected_message)) as raised:
         isolate.run('printf never', logger=logger)
 
     assert isinstance(raised.value.__cause__, WrongDirectoryError)
@@ -613,9 +617,10 @@ def test_install_use_venv_creates_missing_venv(tmp_path, monkeypatch):
         calls.append(args)
         if '-m' in args and 'venv' in args:
             venv_path = Path(args[-1])
-            (venv_path / 'bin').mkdir(parents=True)
-            (venv_path / 'bin' / 'python').write_text('')
-            (venv_path / 'bin' / 'python').chmod(S_IREAD | S_IWRITE | S_IXUSR)
+            python_path = venv_path / VENV_PYTHON_RELATIVE_PATH
+            python_path.parent.mkdir(parents=True)
+            python_path.write_text('')
+            python_path.chmod(S_IREAD | S_IWRITE | S_IXUSR)
         return SubprocessResult(id='install', returncode=0)
 
     monkeypatch.setattr('throng.plugins.directory_isolate.run_suby', fake_run)
@@ -639,7 +644,7 @@ def test_install_use_venv_uses_existing_venv(tmp_path, monkeypatch):
     monkeypatch.setattr('throng.plugins.directory_isolate.run_suby', fake_run)
     config = TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=True)
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
-    venv_python = isolate.directory / '.venv' / 'bin' / 'python'
+    venv_python = isolate.directory / '.venv' / VENV_PYTHON_RELATIVE_PATH
     venv_python.parent.mkdir(parents=True)
     venv_python.write_text('')
     venv_python.chmod(S_IREAD | S_IWRITE | S_IXUSR)
@@ -658,9 +663,10 @@ def test_install_custom_valid_venv_path(tmp_path, monkeypatch):
         calls.append((args, kwargs))
         if '-m' in args and 'venv' in args:
             venv_path = Path(args[-1])
-            (venv_path / 'bin').mkdir(parents=True)
-            (venv_path / 'bin' / 'python').write_text('')
-            (venv_path / 'bin' / 'python').chmod(S_IREAD | S_IWRITE | S_IXUSR)
+            python_path = venv_path / VENV_PYTHON_RELATIVE_PATH
+            python_path.parent.mkdir(parents=True)
+            python_path.write_text('')
+            python_path.chmod(S_IREAD | S_IWRITE | S_IXUSR)
         return SubprocessResult(id='install', returncode=0)
 
     monkeypatch.setattr('throng.plugins.directory_isolate.run_suby', fake_run)
@@ -681,7 +687,7 @@ def test_install_custom_valid_venv_path(tmp_path, monkeypatch):
     assert latest_run_call[0] == ('anything',)
     assert isinstance(latest_run_call[1]['add_env'], dict)
     assert latest_run_call[1]['add_env']['VIRTUAL_ENV'] == str(expected_venv_path)
-    assert str(expected_venv_path / 'bin') in str(latest_run_call[1]['add_env']['PATH'])
+    assert str(expected_venv_path / VENV_PYTHON_RELATIVE_PATH.parent) in str(latest_run_call[1]['add_env']['PATH'])
 
 
 def test_install_venv_creation_failure_raises_install_error(tmp_path, monkeypatch):
@@ -712,7 +718,7 @@ def test_install_rejects_venv_command_that_does_not_create_python(tmp_path, monk
     monkeypatch.setattr('throng.plugins.directory_isolate.run_suby', fake_run)
     config = TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=True)
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
-    python_path = isolate.directory / '.venv' / 'bin' / 'python'
+    python_path = isolate.directory / '.venv' / VENV_PYTHON_RELATIVE_PATH
 
     with pytest.raises(InvalidVirtualEnvPathError, match=match(f'Virtual environment python executable is missing: {python_path}')):
         isolate.install('example', logger=logger)
@@ -869,7 +875,7 @@ def test_run_activates_existing_valid_venv(tmp_path, monkeypatch):
     monkeypatch.setattr('throng.plugins.directory_isolate.run_suby', fake_run)
     config = TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=True)
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
-    venv_python = isolate.directory / '.venv' / 'bin' / 'python'
+    venv_python = isolate.directory / '.venv' / VENV_PYTHON_RELATIVE_PATH
     venv_python.parent.mkdir(parents=True)
     venv_python.write_text('')
     venv_python.chmod(S_IREAD | S_IWRITE | S_IXUSR)
@@ -878,7 +884,7 @@ def test_run_activates_existing_valid_venv(tmp_path, monkeypatch):
 
     assert observed_env is not None
     assert observed_env['VIRTUAL_ENV'] == str(isolate.directory / '.venv')
-    assert str((isolate.directory / '.venv' / 'bin')) in observed_env['PATH']
+    assert str(venv_python.parent) in observed_env['PATH']
 
 
 def test_run_does_not_activate_virtual_environment_before_it_exists(tmp_path, monkeypatch):
@@ -912,7 +918,7 @@ def test_run_venv_path_prepends_user_add_env_path(tmp_path, monkeypatch):
     monkeypatch.setattr('throng.plugins.directory_isolate.run_suby', fake_run)
     config = TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=True)
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
-    venv_python = isolate.directory / '.venv' / 'bin' / 'python'
+    venv_python = isolate.directory / '.venv' / VENV_PYTHON_RELATIVE_PATH
     venv_python.parent.mkdir(parents=True)
     venv_python.write_text('')
     venv_python.chmod(S_IREAD | S_IWRITE | S_IXUSR)
@@ -937,7 +943,7 @@ def test_run_venv_path_uses_user_env_path_when_add_env_path_is_absent(tmp_path, 
     monkeypatch.setattr('throng.plugins.directory_isolate.run_suby', fake_run)
     config = TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=True)
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
-    venv_python = isolate.directory / '.venv' / 'bin' / 'python'
+    venv_python = isolate.directory / '.venv' / VENV_PYTHON_RELATIVE_PATH
     venv_python.parent.mkdir(parents=True)
     venv_python.write_text('')
     venv_python.chmod(S_IREAD | S_IWRITE | S_IXUSR)
@@ -953,7 +959,7 @@ def test_run_venv_path_respects_explicit_empty_environment(tmp_path):
     """Verify that venv activation does not restore the parent PATH when env explicitly replaces it with nothing."""
     config = TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=True)
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
-    venv_python = isolate.directory / '.venv' / 'bin' / 'python'
+    venv_python = isolate.directory / '.venv' / VENV_PYTHON_RELATIVE_PATH
     venv_python.parent.mkdir(parents=True)
     venv_python.write_text('')
     venv_python.chmod(S_IREAD | S_IWRITE | S_IXUSR)
@@ -976,8 +982,9 @@ def test_run_broken_venv_error(tmp_path):
     config = TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=True)
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
     (isolate.directory / '.venv').mkdir()
+    python_path = isolate.directory / '.venv' / VENV_PYTHON_RELATIVE_PATH
 
-    with pytest.raises(InvalidVirtualEnvPathError, match=match(f'Virtual environment python executable is missing: {isolate.directory / ".venv" / "bin" / "python"}')):
+    with pytest.raises(InvalidVirtualEnvPathError, match=match(f'Virtual environment python executable is missing: {python_path}')):
         isolate.run('anything')
 
 
@@ -993,7 +1000,7 @@ def test_operations_reject_directory_as_venv_python_executable(tmp_path, monkeyp
     monkeypatch.setattr('throng.plugins.directory_isolate.run_suby', fake_run)
     config = TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=True)
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
-    python_path = isolate.directory / '.venv' / 'bin' / 'python'
+    python_path = isolate.directory / '.venv' / VENV_PYTHON_RELATIVE_PATH
     python_path.mkdir(parents=True)
     operations = {
         'run': lambda: isolate.run('anything'),
@@ -1280,9 +1287,10 @@ def test_logging_install_success_and_failure(tmp_path, monkeypatch):
         calls.append(args)
         if '-m' in args and 'venv' in args:
             venv_path = Path(args[-1])
-            (venv_path / 'bin').mkdir(parents=True)
-            (venv_path / 'bin' / 'python').write_text('')
-            (venv_path / 'bin' / 'python').chmod(S_IREAD | S_IWRITE | S_IXUSR)
+            python_path = venv_path / VENV_PYTHON_RELATIVE_PATH
+            python_path.parent.mkdir(parents=True)
+            python_path.write_text('')
+            python_path.chmod(S_IREAD | S_IWRITE | S_IXUSR)
         return SubprocessResult(id='install-ok', returncode=0)
 
     monkeypatch.setattr('throng.plugins.directory_isolate.run_suby', successful_run)
@@ -1575,7 +1583,14 @@ def test_dump_excludes_custom_venv_path_by_default(temporary_isolate):
         assert 'custom/env/installed.txt' not in archive.getnames()
 
 
-@pytest.mark.parametrize('venv_path', ['[env]', 'venv*', '!'])
+@pytest.mark.parametrize(
+    'venv_path',
+    [
+        '[env]',
+        pytest.param('venv*', marks=pytest.mark.skipif(os_name == 'nt', reason='Windows does not permit "*" in directory names')),
+        '!',
+    ],
+)
 def test_dump_excludes_custom_venv_path_as_a_literal_directory(venv_path: str, temporary_isolate):
     """Verify that a custom venv path containing glob syntax excludes only that literal directory during dump."""
     isolate = temporary_isolate(venv_path=venv_path)
@@ -1631,7 +1646,14 @@ def test_load_preserves_excluded_venv(temporary_isolate):
     assert (isolate.directory / 'fresh.txt').read_text() == 'fresh'
 
 
-@pytest.mark.parametrize('venv_path', ['[env]', 'venv*', '!'])
+@pytest.mark.parametrize(
+    'venv_path',
+    [
+        '[env]',
+        pytest.param('venv*', marks=pytest.mark.skipif(os_name == 'nt', reason='Windows does not permit "*" in directory names')),
+        '!',
+    ],
+)
 def test_load_preserves_custom_venv_path_as_a_literal_directory(venv_path: str, temporary_isolate):
     """Verify that load preserves only the literal custom venv directory even when its name resembles a glob."""
     isolate = temporary_isolate(venv_path=venv_path)
@@ -2325,8 +2347,9 @@ def test_operation_rejects_malformed_dump_exclude_added_after_configuration(oper
     assert_any_message_contains(logger.data.exception, operation_name, 'invalid', 'exclude')
 
 
-def test_load_tempdir_creation_failure_is_wrapped_and_logged(tmp_path, monkeypatch, temporary_isolate):
-    """Verify that a real tempfile creation failure is wrapped as ArchiveUnpackError and logged."""
+@pytest.mark.skipif(os_name == 'nt', reason='Windows reports a distinct native tempfile failure reason')
+def test_load_tempdir_creation_failure_is_wrapped_and_logged_on_posix(tmp_path, monkeypatch, temporary_isolate):
+    """Verify that a POSIX tempfile creation failure is wrapped with its native diagnostic and logged."""
     tempdir_file = tmp_path / 'not-a-directory'
     tempdir_file.write_text('content')
     monkeypatch.setattr(tempfile, 'tempdir', str(tempdir_file))
@@ -2337,6 +2360,23 @@ def test_load_tempdir_creation_failure_is_wrapped_and_logged(tmp_path, monkeypat
         isolate.load(make_tar_bytes({'new.txt': b'new'}), logger=logger)
 
     assert [str(call.message) for call in logger.data.exception] == ['Archive unpack failed: cannot create temporary load directories: Not a directory.']
+
+
+@pytest.mark.skipif(os_name != 'nt', reason='POSIX reports a distinct native tempfile failure reason')
+def test_load_tempdir_creation_failure_is_wrapped_and_logged_on_windows(tmp_path, monkeypatch, temporary_isolate):
+    """Verify that a Windows tempfile creation failure is wrapped with its native diagnostic and logged."""
+    tempdir_file = tmp_path / 'not-a-directory'
+    tempdir_file.write_text('content')
+    monkeypatch.setattr(tempfile, 'tempdir', str(tempdir_file))
+    isolate = temporary_isolate()
+    logger = MemoryLogger()
+
+    expected_reason = 'The system cannot find the path specified'
+
+    with pytest.raises(ArchiveUnpackError, match=match(f'archive unpack failed: cannot create temporary load directories: {expected_reason}')):
+        isolate.load(make_tar_bytes({'new.txt': b'new'}), logger=logger)
+
+    assert [str(call.message) for call in logger.data.exception] == [f'Archive unpack failed: cannot create temporary load directories: {expected_reason}.']
 
 
 @pytest.mark.skipif(os_name == 'nt', reason='permission mode semantics differ on Windows')

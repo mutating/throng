@@ -21,6 +21,7 @@ from suby.subprocess_result import SubprocessResult
 
 from tests.helpers import (
     assert_any_message_contains,
+    hold_windows_path_open,
     make_tar_bytes,
     read_tree,
 )
@@ -42,6 +43,10 @@ from throng.plugins.temporary_directory_throng import (
 )
 
 VENV_PYTHON_RELATIVE_PATH = Path('Scripts') / 'python.exe' if os_name == 'nt' else Path('bin') / 'python'
+WINDOWS_FILE_ATTRIBUTE_NORMAL = 0x00000080
+WINDOWS_FILE_SHARE_READ = 0x00000001
+WINDOWS_FILE_SHARE_WRITE = 0x00000002
+WINDOWS_SHARING_VIOLATION_REASON = 'The process cannot access the file because it is being used by another process'
 
 
 class TemporaryIsolateFactory(Protocol):
@@ -2397,6 +2402,36 @@ def test_load_permission_denied_write(request, temporary_isolate):
     assert_any_message_contains(logger.data.exception, 'archive', 'failed')
 
 
+@pytest.mark.skipif(os_name != 'nt', reason='Windows sharing violations are not available on POSIX')
+def test_load_windows_locked_file_reports_backup_failure_and_retains_old_data(temporary_isolate):
+    """
+    Verify that a native Windows commit failure logs an archive failure and preserves live data.
+
+    A readable handle that denies delete sharing lets rollback copy the existing
+    file into backup before deletion fails, exercising the common rollback path
+    that must ignore the incomplete backup copy.
+    """
+    isolate = temporary_isolate()
+    existing_file = isolate.directory / 'old.txt'
+    existing_file.write_text('old')
+    logger = MemoryLogger()
+
+    with hold_windows_path_open(
+        existing_file,
+        share_mode=WINDOWS_FILE_SHARE_READ | WINDOWS_FILE_SHARE_WRITE,
+        flags=WINDOWS_FILE_ATTRIBUTE_NORMAL,
+    ), pytest.raises(
+        ArchiveUnpackError,
+        match=match(f'Archive commit failed; rollback attempted. Cause: {WINDOWS_SHARING_VIOLATION_REASON}.'),
+    ) as raised:
+        isolate.load(make_tar_bytes({'new.txt': b'new'}), logger=logger)
+
+    assert 'Unrestored paths:' not in str(raised.value)
+    assert existing_file.read_text() == 'old'
+    assert not (isolate.directory / 'new.txt').exists()
+    assert_any_message_contains(logger.data.exception, 'archive', 'failed')
+
+
 @pytest.mark.skipif(os_name == 'nt', reason='permission mode semantics differ on Windows')
 def test_dump_permission_denied_read(request, temporary_isolate):
     """Verify that a read failure during dump propagates the read error and logs the failure."""
@@ -2409,6 +2444,28 @@ def test_dump_permission_denied_read(request, temporary_isolate):
     logger = MemoryLogger()
 
     with pytest.raises(PermissionError, match=match(f"[Errno 13] Permission denied: '{unreadable}'")):
+        isolate.dump(logger=logger)
+
+    assert_any_message_contains(logger.data.exception, 'dump', 'failed')
+
+
+@pytest.mark.skipif(os_name != 'nt', reason='Windows sharing violations are not available on POSIX')
+def test_dump_windows_locked_file_propagates_read_failure_and_logs_failure(temporary_isolate):
+    """
+    Verify that a native Windows read failure during dump is propagated and logged.
+
+    An exclusive native handle prevents the archive operation from reading a
+    regular isolate file, so dump must fail instead of returning partial bytes.
+    """
+    isolate = temporary_isolate()
+    unreadable = isolate.directory / 'unreadable.txt'
+    unreadable.write_text('secret')
+    logger = MemoryLogger()
+
+    with hold_windows_path_open(unreadable, share_mode=0, flags=WINDOWS_FILE_ATTRIBUTE_NORMAL), pytest.raises(
+        PermissionError,
+        match=match(f"[Errno 13] Permission denied: '{unreadable}'"),
+    ):
         isolate.dump(logger=logger)
 
     assert_any_message_contains(logger.data.exception, 'dump', 'failed')

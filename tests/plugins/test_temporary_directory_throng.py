@@ -15,7 +15,7 @@ from full_match import match
 from locklib import LockTraceWrapper
 from suby.subprocess_result import SubprocessResult
 
-from tests.helpers import make_tar_bytes
+from tests.helpers import hold_windows_path_open, make_tar_bytes
 from throng import (
     InvalidBaseDirectoryError,
     IsolateDeletedError,
@@ -27,6 +27,11 @@ from throng.plugins.temporary_directory_throng import (
     TemporaryDirectoryIsolationConfig,
     TemporaryDirectoryThrong,
 )
+
+WINDOWS_DIRECTORY_HANDLE_FLAGS = 0x02000000
+WINDOWS_FILE_SHARE_READ = 0x00000001
+WINDOWS_FILE_SHARE_WRITE = 0x00000002
+WINDOWS_SHARING_VIOLATION_REASON = 'The process cannot access the file because it is being used by another process'
 
 
 def assert_isolate_deleted(operation):
@@ -125,6 +130,29 @@ def test_temp_base_not_writable(tmp_path, request):
     base_directory.mkdir()
     request.addfinalizer(lambda: base_directory.chmod(S_IREAD | S_IWRITE | S_IEXEC))
     base_directory.chmod(S_IREAD | S_IEXEC)
+    config = TemporaryDirectoryIsolationConfig(base_directory=str(base_directory))
+    logger = MemoryLogger()
+
+    with pytest.raises(InvalidBaseDirectoryError, match=match(f'Temporary base directory is not writable: {base_directory}')):
+        TemporaryDirectoryThrong(logger=logger, config=config).get_isolate()
+
+    assert [str(call.message) for call in logger.data.error] == [
+        f'Temporary base directory is not writable: {base_directory}',
+    ]
+
+
+@pytest.mark.skipif(os_name != 'nt', reason='Windows read-only directory attributes do not apply on POSIX')
+def test_temp_base_read_only_on_windows_is_rejected_and_logged(tmp_path, request):
+    """
+    Verify that a Windows read-only temporary base directory is rejected and logged.
+
+    Setting the Windows read-only attribute makes the configured base fail the
+    plugin's ``W_OK`` check, so no temporary isolate may be created inside it.
+    """
+    base_directory = tmp_path / 'base'
+    base_directory.mkdir()
+    request.addfinalizer(lambda: base_directory.chmod(S_IREAD | S_IWRITE | S_IEXEC))
+    base_directory.chmod(S_IREAD)
     config = TemporaryDirectoryIsolationConfig(base_directory=str(base_directory))
     logger = MemoryLogger()
 
@@ -367,6 +395,38 @@ def test_temp_delete_failure_raises_and_does_not_log_success(tmp_path, request):
     assert all(str(call.message) != 'Delete completed successfully.' for call in logger.data.info)
 
     base_directory.chmod(S_IREAD | S_IWRITE | S_IEXEC)
+    isolate.delete()
+
+    assert not isolate_directory.exists()
+    assert [str(call.message) for call in logger.data.info].count('Delete completed successfully.') == 1
+
+
+@pytest.mark.skipif(os_name != 'nt', reason='Windows sharing violations are not available on POSIX')
+def test_temp_delete_locked_windows_directory_raises_and_can_be_retried(tmp_path):
+    """
+    Verify that a native Windows delete failure is logged and leaves deletion retryable.
+
+    An open directory handle without delete sharing blocks the first cleanup;
+    after the handle closes, the same isolate must be deletable successfully.
+    """
+    logger = MemoryLogger()
+    throng = TemporaryDirectoryThrong(logger=logger, config=TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path)))
+    isolate = throng.get_isolate()
+    isolate_directory = isolate.directory
+    denied_path = isolate_directory if version_info >= (3, 12) else str(isolate_directory)
+    permission_error_message = f'[WinError 32] {WINDOWS_SHARING_VIOLATION_REASON}: {denied_path!r}'
+
+    with hold_windows_path_open(
+        isolate_directory,
+        share_mode=WINDOWS_FILE_SHARE_READ | WINDOWS_FILE_SHARE_WRITE,
+        flags=WINDOWS_DIRECTORY_HANDLE_FLAGS,
+    ), pytest.raises(PermissionError, match=match(permission_error_message)):
+        isolate.delete()
+
+    assert isolate_directory.exists()
+    assert any('Delete failed' in str(call.message) for call in logger.data.exception)
+    assert all(str(call.message) != 'Delete completed successfully.' for call in logger.data.info)
+
     isolate.delete()
 
     assert not isolate_directory.exists()

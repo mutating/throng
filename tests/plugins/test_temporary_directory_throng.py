@@ -4,6 +4,7 @@ from gc import collect
 from os import name as os_name
 from pathlib import Path
 from stat import S_IEXEC, S_IREAD, S_IWRITE
+from subprocess import run as run_process
 from sys import executable, version_info
 from tempfile import TemporaryDirectory, gettempdir
 from threading import Barrier, Condition, Event, Lock
@@ -125,7 +126,7 @@ def test_temp_base_symlink_to_file(tmp_path):
 
 @pytest.mark.skipif(os_name == 'nt', reason='permission mode semantics differ on Windows')
 def test_temp_base_not_writable(tmp_path, request):
-    """Verify that a non-writable temporary base directory is rejected and logged where permissions apply."""
+    """Verify that a native POSIX creation denial is normalized, chained, and logged."""
     base_directory = tmp_path / 'base'
     base_directory.mkdir()
     request.addfinalizer(lambda: base_directory.chmod(S_IREAD | S_IWRITE | S_IEXEC))
@@ -133,33 +134,38 @@ def test_temp_base_not_writable(tmp_path, request):
     config = TemporaryDirectoryIsolationConfig(base_directory=str(base_directory))
     logger = MemoryLogger()
 
-    with pytest.raises(InvalidBaseDirectoryError, match=match(f'Temporary base directory is not writable: {base_directory}')):
+    with pytest.raises(InvalidBaseDirectoryError, match=match(f'Temporary base directory is not writable: {base_directory}')) as raised:
         TemporaryDirectoryThrong(logger=logger, config=config).get_isolate()
 
-    assert [str(call.message) for call in logger.data.error] == [
+    assert isinstance(raised.value.__cause__, PermissionError)
+    assert list(base_directory.iterdir()) == []
+    assert [str(call.message) for call in logger.data.exception] == [
         f'Temporary base directory is not writable: {base_directory}',
     ]
 
 
-@pytest.mark.skipif(os_name != 'nt', reason='Windows read-only directory attributes do not apply on POSIX')
-def test_temp_base_read_only_on_windows_is_rejected_and_logged(tmp_path, request):
+@pytest.mark.skipif(os_name != 'nt', reason='Windows access control lists are not available on POSIX')
+def test_temp_base_denied_write_on_windows_is_rejected_and_logged(tmp_path, request):
     """
-    Verify that a Windows read-only temporary base directory is rejected and logged.
+    Verify that a Windows temporary base with denied write access is rejected and logged.
 
-    Setting the Windows read-only attribute makes the configured base fail the
-    plugin's ``W_OK`` check, so no temporary isolate may be created inside it.
+    A native deny-write ACL prevents creation of the isolate UUID directory.
+    The plugin must normalize that native denial to ``InvalidBaseDirectoryError``.
     """
     base_directory = tmp_path / 'base'
     base_directory.mkdir()
-    request.addfinalizer(lambda: base_directory.chmod(S_IREAD | S_IWRITE | S_IEXEC))
-    base_directory.chmod(S_IREAD)
+    user_name = run_process(['whoami'], check=True, capture_output=True, text=True).stdout.strip()
+    request.addfinalizer(lambda: run_process(['icacls', str(base_directory), '/remove:d', user_name], check=True, capture_output=True))
+    run_process(['icacls', str(base_directory), '/deny', f'{user_name}:(OI)(CI)(W)'], check=True, capture_output=True)
     config = TemporaryDirectoryIsolationConfig(base_directory=str(base_directory))
     logger = MemoryLogger()
 
-    with pytest.raises(InvalidBaseDirectoryError, match=match(f'Temporary base directory is not writable: {base_directory}')):
+    with pytest.raises(InvalidBaseDirectoryError, match=match(f'Temporary base directory is not writable: {base_directory}')) as raised:
         TemporaryDirectoryThrong(logger=logger, config=config).get_isolate()
 
-    assert [str(call.message) for call in logger.data.error] == [
+    assert isinstance(raised.value.__cause__, PermissionError)
+    assert list(base_directory.iterdir()) == []
+    assert [str(call.message) for call in logger.data.exception] == [
         f'Temporary base directory is not writable: {base_directory}',
     ]
 

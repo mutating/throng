@@ -1,4 +1,5 @@
 import tempfile
+from errno import EACCES
 from io import BytesIO
 from os import environ, link, pathsep
 from os import name as os_name
@@ -2461,10 +2462,11 @@ def test_dump_windows_locked_file_propagates_read_failure_and_logs_failure(tempo
     unreadable = isolate.directory / 'unreadable.txt'
     unreadable.write_text('secret')
     logger = MemoryLogger()
+    permission_error_message = str(PermissionError(EACCES, 'Permission denied', str(unreadable)))
 
     with hold_windows_path_open(unreadable, share_mode=0, flags=WINDOWS_FILE_ATTRIBUTE_NORMAL), pytest.raises(
         PermissionError,
-        match=match(f"[Errno 13] Permission denied: '{unreadable}'"),
+        match=match(permission_error_message),
     ):
         isolate.dump(logger=logger)
 

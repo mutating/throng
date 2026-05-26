@@ -1,5 +1,3 @@
-# mypy: disable-error-code=misc
-# skelet's Storage metaclass exposes Any through class-definition metadata.
 from functools import partial
 from io import BytesIO
 from os import X_OK, access, environ, pathsep

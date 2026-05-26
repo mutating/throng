@@ -6,7 +6,7 @@ This library provides:
 
 - Complete isolation of the program’s core logic from where and how commands are executed. The logic remains compact and describes the essence of the problem.
 - The ability to easily swap one implementation for another. For example, you can replace local command execution with execution inside a Docker container or a cloud virtual machine without changing the code.
-- Parallelization is simple. 
+- Parallelization is simple. Each plugin decides for itself what level of parallelism it needs, so the main code doesn’t even need to know that it’s running in parallel.
 
 
 ## Known limitations

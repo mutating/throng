@@ -801,7 +801,7 @@ class DirectoryIsolate(AbstractIsolate):
         if os_name == 'nt':
             return venv_path / 'Scripts' / 'python.exe'
 
-        return venv_path / 'bin' / 'python'
+        return venv_path / 'bin' / 'python'  # pragma: no cover (Windows)
 
     def _validate_venv_python_path(self, python_path: Path) -> None:
         """Require a runnable Python executable at the configured venv path."""
@@ -810,7 +810,7 @@ class DirectoryIsolate(AbstractIsolate):
         if not python_path.is_file():
             raise InvalidVirtualEnvPathError(f'Virtual environment python executable is not a regular file: {python_path}')
         if os_name != 'nt' and not access(python_path, X_OK):
-            raise InvalidVirtualEnvPathError(f'Virtual environment python executable is not executable: {python_path}')
+            raise InvalidVirtualEnvPathError(f'Virtual environment python executable is not executable: {python_path}')  # pragma: no cover (Windows)
 
     def _build_run_add_env(self, add_env: Optional[Mapping[str, str]], env: Optional[Mapping[str, str]]) -> Optional[Mapping[str, str]]:
         """

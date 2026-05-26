@@ -1,9 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
+from errno import EACCES
 from gc import collect
 from os import name as os_name
 from pathlib import Path
 from stat import S_IEXEC, S_IREAD, S_IWRITE
-from sys import executable
+from sys import executable, version_info
 from tempfile import TemporaryDirectory, gettempdir
 from threading import Barrier, Condition, Event, Lock
 from typing import cast
@@ -343,7 +344,13 @@ def test_temp_configured_base_is_cleaned_when_isolate_is_collected(tmp_path):
 
 
 def test_temp_delete_failure_raises_and_does_not_log_success(tmp_path, request):
-    """Verify that a failed temporary delete is logged and can be retried once filesystem access is restored."""
+    """
+    Verify that a natural delete permission failure is logged and retryable.
+
+    CPython 3.12 preserves the ``Path`` argument in ``shutil.rmtree`` error
+    text, while earlier supported versions stringify it; the operation
+    contract is the same in both forms.
+    """
     if os_name == 'nt':
         pytest.skip('permission mode semantics differ on Windows')
 
@@ -355,8 +362,10 @@ def test_temp_delete_failure_raises_and_does_not_log_success(tmp_path, request):
     isolate_directory = isolate.directory
     request.addfinalizer(lambda: base_directory.chmod(S_IREAD | S_IWRITE | S_IEXEC))
     base_directory.chmod(S_IREAD | S_IEXEC)
+    denied_path = isolate_directory if version_info >= (3, 12) else str(isolate_directory)
+    permission_error_message = str(PermissionError(EACCES, 'Permission denied', denied_path))
 
-    with pytest.raises(PermissionError, match=match(f"[Errno 13] Permission denied: '{isolate_directory}'")):
+    with pytest.raises(PermissionError, match=match(permission_error_message)):
         isolate.delete()
 
     assert isolate_directory.exists()

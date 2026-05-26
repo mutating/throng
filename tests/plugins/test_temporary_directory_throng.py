@@ -145,18 +145,18 @@ def test_temp_base_not_writable(tmp_path, request):
 
 
 @pytest.mark.skipif(os_name != 'nt', reason='Windows access control lists are not available on POSIX')
-def test_temp_base_denied_write_on_windows_is_rejected_and_logged(tmp_path, request):
+def test_temp_base_denied_subdirectory_creation_on_windows_is_rejected_and_logged(tmp_path, request):
     """
-    Verify that a Windows temporary base with denied write access is rejected and logged.
+    Verify that a Windows temporary base unable to contain a child isolate is rejected and logged.
 
-    A native deny-write ACL prevents creation of the isolate UUID directory.
+    A native deny-add-subdirectory ACL prevents creation of the isolate UUID directory.
     The plugin must normalize that native denial to ``InvalidBaseDirectoryError``.
     """
     base_directory = tmp_path / 'base'
     base_directory.mkdir()
     user_name = run_process(['whoami'], check=True, capture_output=True, text=True).stdout.strip()
     request.addfinalizer(lambda: run_process(['icacls', str(base_directory), '/remove:d', user_name], check=True, capture_output=True))
-    run_process(['icacls', str(base_directory), '/deny', f'{user_name}:(OI)(CI)(W)'], check=True, capture_output=True)
+    run_process(['icacls', str(base_directory), '/deny', f'{user_name}:(AD)'], check=True, capture_output=True)
     config = TemporaryDirectoryIsolationConfig(base_directory=str(base_directory))
     logger = MemoryLogger()
 

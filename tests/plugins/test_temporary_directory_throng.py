@@ -1,12 +1,17 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from errno import EACCES
 from gc import collect
+from json import loads
+from os import environ
 from os import name as os_name
 from pathlib import Path
 from stat import S_IEXEC, S_IREAD, S_IWRITE
+from subprocess import list2cmdline
 from subprocess import run as run_process
 from sys import executable, version_info
 from tempfile import TemporaryDirectory, gettempdir
+from textwrap import dedent
 from threading import Barrier, Condition, Event, Lock
 from typing import cast
 
@@ -33,6 +38,186 @@ WINDOWS_DIRECTORY_HANDLE_FLAGS = 0x02000000
 WINDOWS_FILE_SHARE_READ = 0x00000001
 WINDOWS_FILE_SHARE_WRITE = 0x00000002
 WINDOWS_SHARING_VIOLATION_REASON = 'The process cannot access the file because it is being used by another process'
+
+
+def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0915 - Win32 process setup is deliberately localized here.
+    """
+    Start this Python interpreter under a restricted Windows access token.
+
+    This helper is intentionally kept next to its single test because it is
+    not application logic: it prepares a realistic Windows test environment.
+    ``CreateRestrictedToken`` clones the token belonging to the pytest
+    process and, with ``DISABLE_MAX_PRIVILEGE``, removes optional privileges
+    from the child.  ``CreateProcessWithTokenW`` then starts the requested
+    Python command using that restricted token while preserving the current
+    environment and working directory.
+
+    Preserving the environment is significant for CI coverage.  The workflow
+    sets ``COVERAGE_PROCESS_START`` and installs a ``.pth`` startup hook in
+    the active interpreter.  The child therefore starts coverage normally,
+    writes its own parallel data file on exit, and the existing
+    ``coverage combine`` command merges code executed in this child into the
+    final report.
+    """
+    if os_name != 'nt':
+        raise RuntimeError('Restricted Windows Python processes can only be started on Windows.')
+
+    from ctypes import (  # type: ignore[attr-defined]  # noqa: PLC0415 - these APIs exist only on Windows.
+        POINTER,
+        Structure,
+        WinDLL,
+        byref,
+        c_void_p,
+        create_unicode_buffer,
+        get_last_error,
+        sizeof,
+    )
+    from ctypes import (  # noqa: PLC0415 - Windows-only helper.
+        cast as ctypes_cast,
+    )
+    from ctypes.wintypes import (  # noqa: PLC0415 - Windows-only helper.
+        BOOL,
+        BYTE,
+        DWORD,
+        HANDLE,
+        LPVOID,
+        LPWSTR,
+        WORD,
+    )
+
+    class StartupInfo(Structure):
+        """Declare the Win32 startup record required to create a process."""
+
+        _fields_ = [  # noqa: RUF012 - ctypes describes native records through mutable class metadata.
+            ('cb', DWORD),
+            ('lpReserved', LPWSTR),
+            ('lpDesktop', LPWSTR),
+            ('lpTitle', LPWSTR),
+            ('dwX', DWORD),
+            ('dwY', DWORD),
+            ('dwXSize', DWORD),
+            ('dwYSize', DWORD),
+            ('dwXCountChars', DWORD),
+            ('dwYCountChars', DWORD),
+            ('dwFillAttribute', DWORD),
+            ('dwFlags', DWORD),
+            ('wShowWindow', WORD),
+            ('cbReserved2', WORD),
+            ('lpReserved2', POINTER(BYTE)),
+            ('hStdInput', HANDLE),
+            ('hStdOutput', HANDLE),
+            ('hStdError', HANDLE),
+        ]
+
+    class ProcessInformation(Structure):
+        """Declare the Win32 handles returned for a newly created process."""
+
+        _fields_ = [  # noqa: RUF012 - ctypes describes native records through mutable class metadata.
+            ('hProcess', HANDLE),
+            ('hThread', HANDLE),
+            ('dwProcessId', DWORD),
+            ('dwThreadId', DWORD),
+        ]
+
+    kernel32 = WinDLL('kernel32', use_last_error=True)
+    advapi32 = WinDLL('advapi32', use_last_error=True)
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [HANDLE]
+    close_handle.restype = BOOL
+    get_current_process = kernel32.GetCurrentProcess
+    get_current_process.argtypes = []
+    get_current_process.restype = HANDLE
+    wait_for_single_object = kernel32.WaitForSingleObject
+    wait_for_single_object.argtypes = [HANDLE, DWORD]
+    wait_for_single_object.restype = DWORD
+    get_exit_code_process = kernel32.GetExitCodeProcess
+    get_exit_code_process.argtypes = [HANDLE, POINTER(DWORD)]
+    get_exit_code_process.restype = BOOL
+    open_process_token = advapi32.OpenProcessToken
+    open_process_token.argtypes = [HANDLE, DWORD, POINTER(HANDLE)]
+    open_process_token.restype = BOOL
+    create_restricted_token = advapi32.CreateRestrictedToken
+    create_restricted_token.argtypes = [
+        HANDLE,
+        DWORD,
+        DWORD,
+        LPVOID,
+        DWORD,
+        LPVOID,
+        DWORD,
+        LPVOID,
+        POINTER(HANDLE),
+    ]
+    create_restricted_token.restype = BOOL
+    create_process_with_token = advapi32.CreateProcessWithTokenW
+    create_process_with_token.argtypes = [
+        HANDLE,
+        DWORD,
+        LPWSTR,
+        LPWSTR,
+        DWORD,
+        LPVOID,
+        LPWSTR,
+        POINTER(StartupInfo),
+        POINTER(ProcessInformation),
+    ]
+    create_process_with_token.restype = BOOL
+
+    token_access = 0x0001 | 0x0002 | 0x0008
+    disable_max_privilege = 0x00000001
+    create_unicode_environment = 0x00000400
+    infinite_wait = 0xFFFFFFFF
+    process_token = HANDLE()
+    restricted_token = HANDLE()
+    startup_information = StartupInfo()
+    startup_information.cb = sizeof(StartupInfo)
+    process_information = ProcessInformation()
+    command_line = create_unicode_buffer(list2cmdline([executable, *arguments]))
+    environment_block = create_unicode_buffer(''.join(f'{name}={value}\0' for name, value in environ.items()) + '\0')
+
+    with ExitStack() as handles:
+        if not open_process_token(get_current_process(), token_access, byref(process_token)):
+            raise OSError(get_last_error(), 'Could not open the current Windows process token.')
+
+        handles.callback(close_handle, process_token)
+
+        if not create_restricted_token(
+            process_token,
+            disable_max_privilege,
+            0,
+            None,
+            0,
+            None,
+            0,
+            None,
+            byref(restricted_token),
+        ):
+            raise OSError(get_last_error(), 'Could not create a restricted Windows process token.')
+
+        handles.callback(close_handle, restricted_token)
+
+        if not create_process_with_token(
+            restricted_token,
+            0,
+            None,
+            command_line,
+            create_unicode_environment,
+            ctypes_cast(environment_block, c_void_p),
+            str(Path.cwd()),
+            byref(startup_information),
+            byref(process_information),
+        ):
+            raise OSError(get_last_error(), 'Could not start Python with a restricted Windows process token.')
+
+        handles.callback(close_handle, process_information.hThread)
+        handles.callback(close_handle, process_information.hProcess)
+        wait_for_single_object(process_information.hProcess, infinite_wait)
+        exit_code = DWORD()
+
+        if not get_exit_code_process(process_information.hProcess, byref(exit_code)):
+            raise OSError(get_last_error(), 'Could not read the restricted Python process exit code.')
+
+        return int(exit_code.value)
 
 
 def assert_isolate_deleted(operation):
@@ -147,44 +332,105 @@ def test_temp_base_not_writable(tmp_path, request):
 @pytest.mark.skipif(os_name != 'nt', reason='Windows access control lists are not available on POSIX')
 def test_temp_base_denied_subdirectory_creation_on_windows_is_rejected_and_logged(tmp_path, request):
     """
-    Verify that a Windows temporary base unable to contain a child isolate is rejected and logged.
+    Verify that Windows rejects and logs a configured base that cannot hold a child isolate.
 
-    A direct probe first verifies that the native deny-add-subdirectory ACL is
-    effective on the runner.  If it is ineffective, the failure reports the
-    runner ACL and privileges instead of blaming the plugin.  Once effective,
-    the plugin must normalize the same denial to ``InvalidBaseDirectoryError``.
+    On Windows, a directory does not become unwritable merely because its
+    read-only attribute is set.  Access is primarily determined by the
+    directory's discretionary access control list (DACL): its access control
+    entries may explicitly allow or deny rights to a user.  ``icacls`` adds a
+    deny entry for ``AD`` ("add subdirectory") here, which is the exact right
+    needed when the plugin creates the isolate's UUID-named child directory.
+
+    There is one additional Windows rule that matters in GitHub Actions.
+    Every process has an access token that identifies both the user and extra
+    privileges held by that process.  The hosted Windows runner enables
+    ``SeBackupPrivilege`` and ``SeRestorePrivilege`` on pytest's token.
+    Restore privilege can allow a process to create filesystem objects even
+    when an ordinary DACL-based write attempt would fail.  Consequently the
+    parent pytest process is intentionally unsuitable for checking this
+    permission-denied branch: it can bypass the denial that an ordinary user
+    process would observe.
+
+    The test therefore keeps pytest as the supervising parent but executes the
+    library call in a second Python process created through the Win32 APIs
+    ``CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)`` and
+    ``CreateProcessWithTokenW``.  The child still has the same user identity,
+    Python installation, imports and normal filesystem access outside this
+    denied directory, but it no longer has optional token privileges capable
+    of bypassing the DACL.  The child records its result and ``MemoryLogger``
+    messages as JSON because Python exception and logger objects cannot be
+    directly asserted across process boundaries.
+
+    This subprocess does not hide executed code from coverage.  CI starts
+    coverage in Python subprocesses with a site ``.pth`` hook controlled by
+    the inherited ``COVERAGE_PROCESS_START`` variable.  This child inherits
+    that environment, runs the same interpreter without ``-S``, and keeps the
+    repository as its working directory.  Coverage therefore writes a normal
+    parallel child data file, which the workflow's existing
+    ``coverage combine`` step includes in the 100-percent report.
     """
     base_directory = tmp_path / 'base'
     base_directory.mkdir()
     user_name = run_process(['whoami'], check=True, capture_output=True, text=True).stdout.strip()
     request.addfinalizer(lambda: run_process(['icacls', str(base_directory), '/remove:d', user_name], check=True, capture_output=True))
     run_process(['icacls', str(base_directory), '/deny', f'{user_name}:(AD)'], check=True, capture_output=True)
-    access_control_listing = run_process(['icacls', str(base_directory)], check=True, capture_output=True, text=True).stdout
-    privilege_listing = run_process(['whoami', '/priv'], check=True, capture_output=True, text=True).stdout
-    probe_directory = base_directory / 'acl-probe'
+    result_path = tmp_path / 'restricted-child-result.json'
+    child_script = dedent(
+        """
+        from json import dumps
+        from pathlib import Path
+        from subprocess import run
+        from sys import argv
 
-    def create_probe_directory():
-        probe_directory.mkdir()
-        pytest.fail(
-            'Windows ACL precondition failed: direct child directory creation succeeded.\n'
-            f'icacls output:\n{access_control_listing}\n'
-            f'whoami /priv output:\n{privilege_listing}',
+        from emptylog import MemoryLogger
+
+        from throng.plugins.temporary_directory_throng import (
+            TemporaryDirectoryIsolationConfig,
+            TemporaryDirectoryThrong,
         )
 
-    permission_error_message = str(PermissionError(EACCES, 'Permission denied', str(probe_directory), 5))
+        base_directory = Path(argv[1])
+        result_path = Path(argv[2])
+        logger = MemoryLogger()
+        privilege_listing = run(['whoami', '/priv'], check=True, capture_output=True, text=True).stdout
 
-    with pytest.raises(PermissionError, match=match(permission_error_message)):
-        create_probe_directory()
+        try:
+            TemporaryDirectoryThrong(
+                logger=logger,
+                config=TemporaryDirectoryIsolationConfig(base_directory=str(base_directory)),
+            ).get_isolate()
+        except Exception as error:
+            result = {
+                'exception_type': type(error).__name__,
+                'message': str(error),
+                'cause_type': type(error.__cause__).__name__ if error.__cause__ is not None else None,
+                'exception_logs': [str(call.message) for call in logger.data.exception],
+                'privilege_listing': privilege_listing,
+            }
+        else:
+            result = {
+                'exception_type': None,
+                'message': None,
+                'cause_type': None,
+                'exception_logs': [str(call.message) for call in logger.data.exception],
+                'privilege_listing': privilege_listing,
+            }
 
-    config = TemporaryDirectoryIsolationConfig(base_directory=str(base_directory))
-    logger = MemoryLogger()
+        result_path.write_text(dumps(result))
+        """,
+    )
 
-    with pytest.raises(InvalidBaseDirectoryError, match=match(f'Temporary base directory is not writable: {base_directory}')) as raised:
-        TemporaryDirectoryThrong(logger=logger, config=config).get_isolate()
+    child_exit_code = run_python_without_windows_privileges('-c', child_script, str(base_directory), str(result_path))
+    result = loads(result_path.read_text())
 
-    assert isinstance(raised.value.__cause__, PermissionError)
+    assert child_exit_code == 0
+    assert not any('SeBackupPrivilege' in line and 'Enabled' in line for line in result['privilege_listing'].splitlines())
+    assert not any('SeRestorePrivilege' in line and 'Enabled' in line for line in result['privilege_listing'].splitlines())
+    assert result['exception_type'] == 'InvalidBaseDirectoryError'
+    assert result['message'] == f'Temporary base directory is not writable: {base_directory}'
+    assert result['cause_type'] == 'PermissionError'
     assert list(base_directory.iterdir()) == []
-    assert [str(call.message) for call in logger.data.exception] == [
+    assert result['exception_logs'] == [
         f'Temporary base directory is not writable: {base_directory}',
     ]
 

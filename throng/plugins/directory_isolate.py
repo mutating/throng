@@ -786,13 +786,13 @@ class DirectoryIsolate(AbstractIsolate):
         configured_path = Path(self.config.venv_path)
 
         if configured_path.is_absolute():
-            raise InvalidVirtualEnvPathError(f'Virtual environment path must be relative to the isolate directory, got absolute path: {configured_path}')
+            raise InvalidVirtualEnvPathError(f'Virtual environment path must be relative to the isolate directory, got absolute path: {self.config.venv_path}')
 
         resolved_path = (self.directory / configured_path).resolve()
         isolate_path = self.directory.resolve()
 
         if resolved_path != isolate_path and isolate_path not in resolved_path.parents:
-            raise InvalidVirtualEnvPathError(f'Virtual environment path escapes outside the isolate directory: {configured_path}')
+            raise InvalidVirtualEnvPathError(f'Virtual environment path escapes outside the isolate directory: {self.config.venv_path}')
 
         return resolved_path
 

@@ -149,14 +149,33 @@ def test_temp_base_denied_subdirectory_creation_on_windows_is_rejected_and_logge
     """
     Verify that a Windows temporary base unable to contain a child isolate is rejected and logged.
 
-    A native deny-add-subdirectory ACL prevents creation of the isolate UUID directory.
-    The plugin must normalize that native denial to ``InvalidBaseDirectoryError``.
+    A direct probe first verifies that the native deny-add-subdirectory ACL is
+    effective on the runner.  If it is ineffective, the failure reports the
+    runner ACL and privileges instead of blaming the plugin.  Once effective,
+    the plugin must normalize the same denial to ``InvalidBaseDirectoryError``.
     """
     base_directory = tmp_path / 'base'
     base_directory.mkdir()
     user_name = run_process(['whoami'], check=True, capture_output=True, text=True).stdout.strip()
     request.addfinalizer(lambda: run_process(['icacls', str(base_directory), '/remove:d', user_name], check=True, capture_output=True))
     run_process(['icacls', str(base_directory), '/deny', f'{user_name}:(AD)'], check=True, capture_output=True)
+    access_control_listing = run_process(['icacls', str(base_directory)], check=True, capture_output=True, text=True).stdout
+    privilege_listing = run_process(['whoami', '/priv'], check=True, capture_output=True, text=True).stdout
+    probe_directory = base_directory / 'acl-probe'
+
+    def create_probe_directory():
+        probe_directory.mkdir()
+        pytest.fail(
+            'Windows ACL precondition failed: direct child directory creation succeeded.\n'
+            f'icacls output:\n{access_control_listing}\n'
+            f'whoami /priv output:\n{privilege_listing}',
+        )
+
+    permission_error_message = str(PermissionError(EACCES, 'Permission denied', str(probe_directory), 5))
+
+    with pytest.raises(PermissionError, match=match(permission_error_message)):
+        create_probe_directory()
+
     config = TemporaryDirectoryIsolationConfig(base_directory=str(base_directory))
     logger = MemoryLogger()
 

@@ -79,21 +79,6 @@ def temporary_isolate(tmp_path: Path) -> TemporaryIsolateFactory:
     return create
 
 
-def can_create_hardlinks_in_temporary_directory():
-    """Return whether this test environment supports hardlinks in its temporary filesystem."""
-    with tempfile.TemporaryDirectory() as temporary_directory:
-        original_file = Path(temporary_directory) / 'original'
-        linked_file = Path(temporary_directory) / 'linked'
-        original_file.touch()
-
-        try:
-            link(str(original_file), str(linked_file))
-        except OSError:
-            return False
-
-        return True
-
-
 def test_run_precancelled_token_stops_before_suby(tmp_path, monkeypatch):
     """Verify that a pre-cancelled run token stops before the subprocess runner is called."""
     monkeypatch.chdir(tmp_path)
@@ -1486,7 +1471,6 @@ def test_dump_omits_symbolic_links_from_serialized_contents(temporary_isolate):
     assert not (target.directory / 'symbolic.txt').exists()
 
 
-@pytest.mark.skipif(not can_create_hardlinks_in_temporary_directory(), reason='hardlinks are not supported in this temporary filesystem')
 def test_dump_serializes_hardlink_paths_as_regular_files(temporary_isolate):
     """Verify that each hardlink path is dumped as regular file data so that load can restore the archive."""
     source = temporary_isolate()

@@ -1,3 +1,5 @@
+# mypy: disable-error-code=misc
+# Work around skelet.Storage exposing Any in its public class type: https://github.com/mutating/skelet/issues/24
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Optional

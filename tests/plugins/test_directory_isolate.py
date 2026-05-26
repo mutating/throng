@@ -3,6 +3,7 @@ from io import BytesIO
 from os import environ, link, pathsep
 from os import name as os_name
 from pathlib import Path
+from shutil import rmtree as remove_tree
 from stat import S_IMODE, S_IREAD, S_IRWXU, S_ISGID, S_ISUID, S_ISVTX, S_IWRITE, S_IXUSR
 from subprocess import run as run_process
 from sys import executable
@@ -15,7 +16,7 @@ import pytest
 from cantok import CounterToken, SimpleToken, TimeoutToken
 from emptylog import EmptyLogger, MemoryLogger
 from full_match import match
-from suby import RunningCommandError
+from suby import RunningCommandError, WrongCommandError, WrongDirectoryError
 from suby.subprocess_result import SubprocessResult
 
 from tests.helpers import (
@@ -488,6 +489,47 @@ def test_run_env_conflict_raises_command_error_and_logs_failure(tmp_path, monkey
             split=False,
         )
 
+    assert_any_message_contains(logger.data.exception, 'run', 'failed')
+
+
+def test_run_malformed_expression_normalizes_wrong_command_error(tmp_path):
+    """
+    Verify that the public run API does not expose suby's parsing error type.
+
+    A naturally malformed quoted command makes suby raise
+    ``WrongCommandError``; throng must expose ``CommandExecutionError`` and
+    retain the backend failure only as its chained cause.
+    """
+    logger = MemoryLogger()
+    isolate = TemporaryDirectoryThrong(
+        config=TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=False),
+    ).get_isolate()
+
+    with pytest.raises(CommandExecutionError, match=match('The expression ""unterminated" cannot be parsed.')) as raised:
+        isolate.run('"unterminated', logger=logger)
+
+    assert isinstance(raised.value.__cause__, WrongCommandError)
+    assert_any_message_contains(logger.data.exception, 'run', 'failed')
+
+
+def test_run_missing_isolate_directory_normalizes_wrong_directory_error(tmp_path):
+    """
+    Verify that the public run API does not expose suby's directory error type.
+
+    Removing a temporary isolate directory externally makes suby reject its
+    forced working directory; throng must expose ``CommandExecutionError`` and
+    retain ``WrongDirectoryError`` only as its chained cause.
+    """
+    logger = MemoryLogger()
+    isolate = TemporaryDirectoryThrong(
+        config=TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=False),
+    ).get_isolate()
+    remove_tree(isolate.directory)
+
+    with pytest.raises(CommandExecutionError, match=match(f"The directory '{isolate.directory}' does not exist.")) as raised:
+        isolate.run('printf never', logger=logger)
+
+    assert isinstance(raised.value.__cause__, WrongDirectoryError)
     assert_any_message_contains(logger.data.exception, 'run', 'failed')
 
 

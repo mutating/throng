@@ -1,5 +1,9 @@
 # throng
 
+Sometimes our programs need to execute console commands. In some cases, a command may be executed locally, while in others it may be executed in parallel across thousands of machines in the cloud. This library serves as an abstraction layer for various command execution environments, allowing you to write code once that will run anywhere.
+
+
+
 ## Known limitations
 
 `load()` preserves excluded paths by temporarily moving existing isolate

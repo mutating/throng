@@ -9,15 +9,6 @@ from typing import Dict, Iterable, Optional
 from dirstree import Crawler
 from emptylog.call_data import LoggerCallData
 
-if platform == 'win32':
-    from ctypes import (  # type: ignore[attr-defined]  # POSIX typeshed omits the Windows-only API.
-        WinDLL,
-        c_uint32,
-        c_void_p,
-        c_wchar_p,
-        get_last_error,
-    )
-
 
 @contextmanager
 def hold_windows_path_open(path: Path, *, share_mode: int, flags: int):
@@ -29,6 +20,14 @@ def hold_windows_path_open(path: Path, *, share_mode: int, flags: int):
     """
     if platform != 'win32':
         raise RuntimeError('Windows handles can only be held open on Windows.')
+
+    from ctypes import (  # type: ignore[attr-defined]  # noqa: PLC0415 - this API exists only on Windows.
+        WinDLL,
+        c_uint32,
+        c_void_p,
+        c_wchar_p,
+        get_last_error,
+    )
 
     kernel32 = WinDLL('kernel32', use_last_error=True)
     create_file = kernel32.CreateFileW

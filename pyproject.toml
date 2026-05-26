@@ -78,3 +78,7 @@ format.quote-style = "single"
 [project.urls]
 'Source' = 'https://github.com/mutating/throng'
 'Tracker' = 'https://github.com/mutating/throng/issues'
+
+[project.entry-points.throng]
+local = "throng.plugins.plugins:create_local_throng"
+temporary_directory = "throng.plugins.plugins:create_temporary_directory_throng"

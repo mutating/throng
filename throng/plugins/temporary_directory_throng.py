@@ -1,6 +1,5 @@
 # mypy: disable-error-code=misc
 # skelet's Storage metaclass exposes Any through class-definition metadata.
-from os import W_OK, access
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Optional
@@ -55,22 +54,26 @@ class TemporaryDirectoryThrong(AbstractThrong):
         self._validate_base_directory(base_directory)
 
         isolate_directory = base_directory / uuid4().hex
-        isolate_directory.mkdir()
+
+        try:
+            isolate_directory.mkdir()
+        except PermissionError as error:
+            validation_error_message = f'Temporary base directory is not writable: {base_directory}'
+            self.logger.exception(validation_error_message)
+            raise InvalidBaseDirectoryError(validation_error_message) from error
 
         self.logger.info(f'Creating temporary isolate "{isolate_directory}" inside base directory "{base_directory}".')
 
         return DirectoryIsolate(isolate_directory, self.config, self.logger, lock=EmptyLock(), owns_directory=True)
 
     def _validate_base_directory(self, base_directory: Path) -> None:
-        """Reject configured bases that cannot contain newly created isolates."""
+        """Reject configured bases that do not exist as directories."""
         validation_error_message = None
 
         if not base_directory.exists():
             validation_error_message = f'Temporary base directory does not exist: {base_directory}'
         elif not base_directory.is_dir():
             validation_error_message = f'Temporary base path is not a directory: {base_directory}'
-        elif not access(base_directory, W_OK):
-            validation_error_message = f'Temporary base directory is not writable: {base_directory}'
 
         if validation_error_message is not None:
             self.logger.error(validation_error_message)

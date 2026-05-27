@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from errno import EACCES
 from gc import collect
+from inspect import signature
 from os import name as os_name
 from pathlib import Path
 from stat import S_IEXEC, S_IREAD, S_IWRITE
@@ -610,6 +611,10 @@ def test_temp_delete_stdlib_temp_manager(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(os_name == 'nt', reason='POSIX parent directory permission semantics do not apply on Windows')
+@pytest.mark.skipif(
+    'repeated' not in signature(TemporaryDirectory._rmtree).parameters,  # type: ignore[attr-defined]  # private stdlib method is not present in typeshed.
+    reason='Affected CPython tempfile cleanup retries this natural permission denial recursively',
+)
 def test_temp_delete_stdlib_temp_manager_failure_is_logged_and_retryable_on_posix(tmp_path, monkeypatch, request):
     """
     Verify that a real POSIX failure in ``TemporaryDirectory.cleanup()`` is logged and retryable.
@@ -617,7 +622,10 @@ def test_temp_delete_stdlib_temp_manager_failure_is_logged_and_retryable_on_posi
     The stdlib cleanup implementation may repair permissions on the temporary
     directory it owns before retrying deletion.  Placing it in a separate
     read-only parent reliably blocks removal of that owned child without
-    asking the implementation under test to fake a cleanup failure.
+    asking the implementation under test to fake a cleanup failure.  Older
+    CPython implementations recursively retry this exact denial until they
+    raise ``RecursionError``; the accompanying decorator keeps this natural
+    scenario on versions whose stdlib returns the filesystem error to throng.
     """
     temporary_root = tmp_path / 'stdlib-temporary-root'
     temporary_root.mkdir()
@@ -644,13 +652,19 @@ def test_temp_delete_stdlib_temp_manager_failure_is_logged_and_retryable_on_posi
 
 
 @pytest.mark.skipif(os_name != 'nt', reason='Windows sharing violations are not available on POSIX')
+@pytest.mark.skipif(
+    'repeated' not in signature(TemporaryDirectory._rmtree).parameters,  # type: ignore[attr-defined]  # private stdlib method is not present in typeshed.
+    reason='Affected CPython tempfile cleanup retries this natural permission denial recursively',
+)
 def test_temp_delete_stdlib_temp_manager_locked_windows_directory_raises_and_can_be_retried():
     """
     Verify that a real Windows failure in ``TemporaryDirectory.cleanup()`` is logged and retryable.
 
     An open directory handle without delete sharing prevents stdlib cleanup
     from removing its managed directory.  Closing that handle makes the same
-    isolate deletable on a later attempt.
+    isolate deletable on a later attempt.  Older CPython implementations
+    cannot be used for this natural failure test because their stdlib cleanup
+    recursively retries the denial instead of returning it to throng.
     """
     logger = MemoryLogger()
     isolate = TemporaryDirectoryThrong(logger=logger).get_isolate()

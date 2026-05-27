@@ -1,19 +1,15 @@
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from errno import EACCES
 from gc import collect
-from json import loads
-from os import environ
 from os import name as os_name
 from pathlib import Path
 from stat import S_IEXEC, S_IREAD, S_IWRITE
-from subprocess import list2cmdline
 from subprocess import run as run_process
 from sys import executable, version_info
 from tempfile import TemporaryDirectory, gettempdir
-from textwrap import dedent
 from threading import Barrier, Condition, Event, Lock
-from typing import cast
+from typing import Iterator, cast
 
 import pytest
 from emptylog import MemoryLogger
@@ -40,92 +36,48 @@ WINDOWS_FILE_SHARE_WRITE = 0x00000002
 WINDOWS_SHARING_VIOLATION_REASON = 'The process cannot access the file because it is being used by another process'
 
 
-def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0915 - Win32 process setup is deliberately localized here.
+@contextmanager
+def impersonate_without_windows_privileges() -> Iterator[None]:
     """
-    Start this Python interpreter under a restricted Windows access token.
+    Temporarily run the current thread under a restricted Windows access token.
 
     This helper is intentionally kept next to its single test because it is
     not application logic: it prepares a realistic Windows test environment.
-    ``CreateRestrictedToken`` clones the token belonging to the pytest
-    process and, with ``DISABLE_MAX_PRIVILEGE``, removes optional privileges
-    from the child.  Microsoft documents ``CreateProcessAsUserW`` as the
-    launcher for a process that uses this restricted token.  For a restricted
-    version of the caller's own primary token, Windows does not require
-    ``SeAssignPrimaryTokenPrivilege``; the API temporarily enables a required
-    privilege that is already present but disabled on the caller's token.
-    The child preserves the current environment and working directory.
+    On Windows, a process has a primary access token describing its identity,
+    group memberships and privileges.  Threads normally use that token for
+    filesystem access checks.  ``CreateRestrictedToken`` clones it and,
+    with ``DISABLE_MAX_PRIVILEGE``, disables optional privileges such as the
+    restore privilege that lets the hosted CI runner bypass an ACL denial.
 
-    Preserving the environment is significant for CI coverage.  The workflow
-    sets ``COVERAGE_PROCESS_START`` and installs a ``.pth`` startup hook in
-    the active interpreter.  The child therefore starts coverage normally,
-    writes its own parallel data file on exit, and the existing
-    ``coverage combine`` command merges code executed in this child into the
-    final report.
+    ``ImpersonateLoggedOnUser`` attaches that restricted token only to the
+    current test thread.  While the context is active, filesystem operations
+    made by the library use the restricted token for their access checks; the
+    pytest worker process itself is not replaced or restarted.
+    ``RevertToSelf`` removes the impersonation before handles are closed and
+    before the test performs cleanup, so subsequent pytest activity resumes
+    under the runner's original security context.
 
-    The caller passes a script file path rather than a substantial inline
-    ``python -c`` program.  Apart from keeping native process-launch details
-    readable, this avoids coupling the test to a launcher's command-line
-    length and quoting behavior.
+    Running the operation in this same Python process is also important for
+    coverage.  The permission-denied exception handler is executed directly
+    inside the already-instrumented pytest worker, rather than in a spawned
+    child whose separate coverage data would have to be transported and
+    combined reliably on every Windows/Python combination.
     """
     if os_name != 'nt':
-        raise RuntimeError('Restricted Windows Python processes can only be started on Windows.')
+        raise RuntimeError('Restricted Windows impersonation can only be used on Windows.')
 
     from ctypes import (  # type: ignore[attr-defined]  # noqa: PLC0415 - these APIs exist only on Windows.
         POINTER,
-        Structure,
         WinDLL,
         byref,
-        c_void_p,
-        create_unicode_buffer,
         get_last_error,
-        sizeof,
-    )
-    from ctypes import (  # noqa: PLC0415 - Windows-only helper.
-        cast as ctypes_cast,
     )
     from ctypes.wintypes import (  # noqa: PLC0415 - Windows-only helper.
         BOOL,
-        BYTE,
         DWORD,
         HANDLE,
         LPVOID,
-        LPWSTR,
-        WORD,
     )
-
-    class StartupInfo(Structure):
-        """Declare the Win32 startup record required to create a process."""
-
-        _fields_ = [  # noqa: RUF012 - ctypes describes native records through mutable class metadata.
-            ('cb', DWORD),
-            ('lpReserved', LPWSTR),
-            ('lpDesktop', LPWSTR),
-            ('lpTitle', LPWSTR),
-            ('dwX', DWORD),
-            ('dwY', DWORD),
-            ('dwXSize', DWORD),
-            ('dwYSize', DWORD),
-            ('dwXCountChars', DWORD),
-            ('dwYCountChars', DWORD),
-            ('dwFillAttribute', DWORD),
-            ('dwFlags', DWORD),
-            ('wShowWindow', WORD),
-            ('cbReserved2', WORD),
-            ('lpReserved2', POINTER(BYTE)),
-            ('hStdInput', HANDLE),
-            ('hStdOutput', HANDLE),
-            ('hStdError', HANDLE),
-        ]
-
-    class ProcessInformation(Structure):
-        """Declare the Win32 handles returned for a newly created process."""
-
-        _fields_ = [  # noqa: RUF012 - ctypes describes native records through mutable class metadata.
-            ('hProcess', HANDLE),
-            ('hThread', HANDLE),
-            ('dwProcessId', DWORD),
-            ('dwThreadId', DWORD),
-        ]
 
     kernel32 = WinDLL('kernel32', use_last_error=True)
     advapi32 = WinDLL('advapi32', use_last_error=True)
@@ -135,12 +87,6 @@ def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0
     get_current_process = kernel32.GetCurrentProcess
     get_current_process.argtypes = []
     get_current_process.restype = HANDLE
-    wait_for_single_object = kernel32.WaitForSingleObject
-    wait_for_single_object.argtypes = [HANDLE, DWORD]
-    wait_for_single_object.restype = DWORD
-    get_exit_code_process = kernel32.GetExitCodeProcess
-    get_exit_code_process.argtypes = [HANDLE, POINTER(DWORD)]
-    get_exit_code_process.restype = BOOL
     open_process_token = advapi32.OpenProcessToken
     open_process_token.argtypes = [HANDLE, DWORD, POINTER(HANDLE)]
     open_process_token.restype = BOOL
@@ -157,33 +103,17 @@ def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0
         POINTER(HANDLE),
     ]
     create_restricted_token.restype = BOOL
-    create_process_as_user = advapi32.CreateProcessAsUserW
-    create_process_as_user.argtypes = [
-        HANDLE,
-        LPWSTR,
-        LPWSTR,
-        LPVOID,
-        LPVOID,
-        BOOL,
-        DWORD,
-        LPVOID,
-        LPWSTR,
-        POINTER(StartupInfo),
-        POINTER(ProcessInformation),
-    ]
-    create_process_as_user.restype = BOOL
+    impersonate_logged_on_user = advapi32.ImpersonateLoggedOnUser
+    impersonate_logged_on_user.argtypes = [HANDLE]
+    impersonate_logged_on_user.restype = BOOL
+    revert_to_self = advapi32.RevertToSelf
+    revert_to_self.argtypes = []
+    revert_to_self.restype = BOOL
 
-    token_access = 0x0001 | 0x0002 | 0x0008
+    token_access = 0x0002 | 0x0008
     disable_max_privilege = 0x00000001
-    create_unicode_environment = 0x00000400
-    infinite_wait = 0xFFFFFFFF
     process_token = HANDLE()
     restricted_token = HANDLE()
-    startup_information = StartupInfo()
-    startup_information.cb = sizeof(StartupInfo)
-    process_information = ProcessInformation()
-    command_line = create_unicode_buffer(list2cmdline([executable, *arguments]))
-    environment_block = create_unicode_buffer(''.join(f'{name}={value}\0' for name, value in environ.items()) + '\0')
 
     with ExitStack() as handles:
         if not open_process_token(get_current_process(), token_access, byref(process_token)):
@@ -206,30 +136,16 @@ def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0
 
         handles.callback(close_handle, restricted_token)
 
-        if not create_process_as_user(
-            restricted_token,
-            str(executable),
-            command_line,
-            None,
-            None,
-            False,
-            create_unicode_environment,
-            ctypes_cast(environment_block, c_void_p),
-            str(Path.cwd()),
-            byref(startup_information),
-            byref(process_information),
-        ):
-            raise OSError(get_last_error(), 'Could not start Python through a restricted Windows process token.')
+        if not impersonate_logged_on_user(restricted_token):
+            raise OSError(get_last_error(), 'Could not impersonate a restricted Windows access token.')
 
-        handles.callback(close_handle, process_information.hThread)
-        handles.callback(close_handle, process_information.hProcess)
-        wait_for_single_object(process_information.hProcess, infinite_wait)
-        exit_code = DWORD()
+        def revert_security_context() -> None:
+            if not revert_to_self():
+                raise OSError(get_last_error(), 'Could not restore the original Windows access token.')
 
-        if not get_exit_code_process(process_information.hProcess, byref(exit_code)):
-            raise OSError(get_last_error(), 'Could not read the restricted Python process exit code.')
+        handles.callback(revert_security_context)
 
-        return int(exit_code.value)
+        yield
 
 
 def assert_isolate_deleted(operation):
@@ -363,94 +279,40 @@ def test_temp_base_denied_subdirectory_creation_on_windows_is_rejected_and_logge
     permission-denied branch: it can bypass the denial that an ordinary user
     process would observe.
 
-    The test therefore keeps pytest as the supervising parent but executes the
-    library call in a second Python process created through the Win32 APIs
-    ``CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)`` and
-    ``CreateProcessAsUserW``.  This is the documented API pair for running a
-    process under a restricted copy of the caller's own primary token: the
-    child still has the same user identity,
-    Python installation, imports and normal filesystem access outside this
-    denied directory, but it no longer has optional token privileges capable
-    of bypassing the DACL.  The child records its result and ``MemoryLogger``
-    messages as JSON because Python exception and logger objects cannot be
-    directly asserted across process boundaries.
+    The test therefore leaves the pytest worker alive and temporarily changes
+    only the current thread's security context.  It obtains the worker's
+    primary token, creates a restricted copy with
+    ``CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)``, then applies that copy
+    with ``ImpersonateLoggedOnUser``.  Windows uses this restricted token for
+    filesystem access checks performed by the thread while the context is
+    active.  The library operation consequently sees the ACL denial as a real
+    ``PermissionError``.  On leaving the context, ``RevertToSelf`` restores
+    the original runner token before any assertions or cleanup are performed.
 
-    This subprocess does not hide executed code from coverage.  CI starts
-    coverage in Python subprocesses with a site ``.pth`` hook controlled by
-    the inherited ``COVERAGE_PROCESS_START`` variable.  This child inherits
-    that environment, runs the same interpreter without ``-S``, and keeps the
-    repository as its working directory.  Coverage therefore writes a normal
-    parallel child data file, which the workflow's existing
-    ``coverage combine`` step includes in the 100-percent report.
-
-    The child program is saved to a temporary ``.py`` file instead of being
-    supplied through ``python -c`` so that native process-launch mechanics do
-    not depend on the length or quoting of this explanatory test program.
+    This same-thread approach is also what makes the coverage assertion
+    reliable.  The four error-handling lines in
+    ``TemporaryDirectoryThrong.get_isolate`` execute directly inside the
+    pytest worker already being traced by coverage, rather than in a separate
+    restricted process whose coverage files would have to survive and be
+    combined by CI.
     """
     base_directory = tmp_path / 'base'
     base_directory.mkdir()
     user_name = run_process(['whoami'], check=True, capture_output=True, text=True).stdout.strip()
     request.addfinalizer(lambda: run_process(['icacls', str(base_directory), '/remove:d', user_name], check=True, capture_output=True))
     run_process(['icacls', str(base_directory), '/deny', f'{user_name}:(AD)'], check=True, capture_output=True)
-    result_path = tmp_path / 'restricted-child-result.json'
-    child_script_path = tmp_path / 'restricted-child.py'
-    child_script = dedent(
-        """
-        from json import dumps
-        from pathlib import Path
-        from subprocess import run
-        from sys import argv
+    config = TemporaryDirectoryIsolationConfig(base_directory=str(base_directory))
+    logger = MemoryLogger()
 
-        from emptylog import MemoryLogger
+    with impersonate_without_windows_privileges(), pytest.raises(
+        InvalidBaseDirectoryError,
+        match=match(f'Temporary base directory is not writable: {base_directory}'),
+    ) as raised:
+        TemporaryDirectoryThrong(logger=logger, config=config).get_isolate()
 
-        from throng.plugins.temporary_directory_throng import (
-            TemporaryDirectoryIsolationConfig,
-            TemporaryDirectoryThrong,
-        )
-
-        base_directory = Path(argv[1])
-        result_path = Path(argv[2])
-        logger = MemoryLogger()
-        privilege_listing = run(['whoami', '/priv'], check=True, capture_output=True, text=True).stdout
-
-        try:
-            TemporaryDirectoryThrong(
-                logger=logger,
-                config=TemporaryDirectoryIsolationConfig(base_directory=str(base_directory)),
-            ).get_isolate()
-        except Exception as error:
-            result = {
-                'exception_type': type(error).__name__,
-                'message': str(error),
-                'cause_type': type(error.__cause__).__name__ if error.__cause__ is not None else None,
-                'exception_logs': [str(call.message) for call in logger.data.exception],
-                'privilege_listing': privilege_listing,
-            }
-        else:
-            result = {
-                'exception_type': None,
-                'message': None,
-                'cause_type': None,
-                'exception_logs': [str(call.message) for call in logger.data.exception],
-                'privilege_listing': privilege_listing,
-            }
-
-        result_path.write_text(dumps(result))
-        """,
-    )
-    child_script_path.write_text(child_script)
-
-    child_exit_code = run_python_without_windows_privileges(str(child_script_path), str(base_directory), str(result_path))
-    result = loads(result_path.read_text())
-
-    assert child_exit_code == 0
-    assert not any('SeBackupPrivilege' in line and 'Enabled' in line for line in result['privilege_listing'].splitlines())
-    assert not any('SeRestorePrivilege' in line and 'Enabled' in line for line in result['privilege_listing'].splitlines())
-    assert result['exception_type'] == 'InvalidBaseDirectoryError'
-    assert result['message'] == f'Temporary base directory is not writable: {base_directory}'
-    assert result['cause_type'] == 'PermissionError'
+    assert isinstance(raised.value.__cause__, PermissionError)
     assert list(base_directory.iterdir()) == []
-    assert result['exception_logs'] == [
+    assert [str(call.message) for call in logger.data.exception] == [
         f'Temporary base directory is not writable: {base_directory}',
     ]
 

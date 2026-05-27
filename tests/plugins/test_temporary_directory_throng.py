@@ -58,6 +58,11 @@ def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0
     writes its own parallel data file on exit, and the existing
     ``coverage combine`` command merges code executed in this child into the
     final report.
+
+    ``CreateProcessWithTokenW`` accepts at most 1024 command-line
+    characters.  Callers must therefore pass a script file path rather than
+    a substantial inline ``python -c`` program; otherwise Windows rejects
+    the process creation call before Python starts.
     """
     if os_name != 'nt':
         raise RuntimeError('Restricted Windows Python processes can only be started on Windows.')
@@ -368,6 +373,11 @@ def test_temp_base_denied_subdirectory_creation_on_windows_is_rejected_and_logge
     repository as its working directory.  Coverage therefore writes a normal
     parallel child data file, which the workflow's existing
     ``coverage combine`` step includes in the 100-percent report.
+
+    The child program is saved to a temporary ``.py`` file instead of being
+    supplied through ``python -c``.  This is required because
+    ``CreateProcessWithTokenW`` has a 1024-character command-line limit and
+    this deliberately explanatory test program is longer than that limit.
     """
     base_directory = tmp_path / 'base'
     base_directory.mkdir()
@@ -375,6 +385,7 @@ def test_temp_base_denied_subdirectory_creation_on_windows_is_rejected_and_logge
     request.addfinalizer(lambda: run_process(['icacls', str(base_directory), '/remove:d', user_name], check=True, capture_output=True))
     run_process(['icacls', str(base_directory), '/deny', f'{user_name}:(AD)'], check=True, capture_output=True)
     result_path = tmp_path / 'restricted-child-result.json'
+    child_script_path = tmp_path / 'restricted-child.py'
     child_script = dedent(
         """
         from json import dumps
@@ -419,8 +430,9 @@ def test_temp_base_denied_subdirectory_creation_on_windows_is_rejected_and_logge
         result_path.write_text(dumps(result))
         """,
     )
+    child_script_path.write_text(child_script)
 
-    child_exit_code = run_python_without_windows_privileges('-c', child_script, str(base_directory), str(result_path))
+    child_exit_code = run_python_without_windows_privileges(str(child_script_path), str(base_directory), str(result_path))
     result = loads(result_path.read_text())
 
     assert child_exit_code == 0

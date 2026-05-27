@@ -609,6 +609,71 @@ def test_temp_delete_stdlib_temp_manager(tmp_path, monkeypatch):
     assert not isolate_directory.exists()
 
 
+@pytest.mark.skipif(os_name == 'nt', reason='POSIX parent directory permission semantics do not apply on Windows')
+def test_temp_delete_stdlib_temp_manager_failure_is_logged_and_retryable_on_posix(tmp_path, monkeypatch, request):
+    """
+    Verify that a real POSIX failure in ``TemporaryDirectory.cleanup()`` is logged and retryable.
+
+    The stdlib cleanup implementation may repair permissions on the temporary
+    directory it owns before retrying deletion.  Placing it in a separate
+    read-only parent reliably blocks removal of that owned child without
+    asking the implementation under test to fake a cleanup failure.
+    """
+    temporary_root = tmp_path / 'stdlib-temporary-root'
+    temporary_root.mkdir()
+    request.addfinalizer(lambda: temporary_root.chmod(S_IREAD | S_IWRITE | S_IEXEC))
+    monkeypatch.setattr('tempfile.tempdir', str(temporary_root))
+    logger = MemoryLogger()
+    isolate = TemporaryDirectoryThrong(logger=logger).get_isolate()
+    isolate_directory = isolate.directory
+    temporary_root.chmod(S_IREAD | S_IEXEC)
+    permission_error_message = str(PermissionError(EACCES, 'Permission denied', str(isolate_directory)))
+
+    with pytest.raises(PermissionError, match=match(permission_error_message)):
+        isolate.delete()
+
+    assert isolate_directory.exists()
+    assert [str(call.message) for call in logger.data.exception] == [f'Delete failed: {permission_error_message}.']
+    assert all(str(call.message) != 'Delete completed successfully.' for call in logger.data.info)
+
+    temporary_root.chmod(S_IREAD | S_IWRITE | S_IEXEC)
+    isolate.delete()
+
+    assert not isolate_directory.exists()
+    assert [str(call.message) for call in logger.data.info].count('Delete completed successfully.') == 1
+
+
+@pytest.mark.skipif(os_name != 'nt', reason='Windows sharing violations are not available on POSIX')
+def test_temp_delete_stdlib_temp_manager_locked_windows_directory_raises_and_can_be_retried():
+    """
+    Verify that a real Windows failure in ``TemporaryDirectory.cleanup()`` is logged and retryable.
+
+    An open directory handle without delete sharing prevents stdlib cleanup
+    from removing its managed directory.  Closing that handle makes the same
+    isolate deletable on a later attempt.
+    """
+    logger = MemoryLogger()
+    isolate = TemporaryDirectoryThrong(logger=logger).get_isolate()
+    isolate_directory = isolate.directory
+    permission_error_message = str(PermissionError(EACCES, WINDOWS_SHARING_VIOLATION_REASON, str(isolate_directory), 32))
+
+    with hold_windows_path_open(
+        isolate_directory,
+        share_mode=WINDOWS_FILE_SHARE_READ | WINDOWS_FILE_SHARE_WRITE,
+        flags=WINDOWS_DIRECTORY_HANDLE_FLAGS,
+    ), pytest.raises(PermissionError, match=match(permission_error_message)):
+        isolate.delete()
+
+    assert isolate_directory.exists()
+    assert [str(call.message) for call in logger.data.exception] == [f'Delete failed: {permission_error_message}.']
+    assert all(str(call.message) != 'Delete completed successfully.' for call in logger.data.info)
+
+    isolate.delete()
+
+    assert not isolate_directory.exists()
+    assert [str(call.message) for call in logger.data.info].count('Delete completed successfully.') == 1
+
+
 def test_temp_delete_does_not_wait_for_running_operation(tmp_path, monkeypatch):
     """Verify that temporary isolate delete is not serialized behind an in-flight run and does not hide the run result."""
     started = Event()

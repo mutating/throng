@@ -48,6 +48,7 @@ WINDOWS_FILE_ATTRIBUTE_NORMAL = 0x00000080
 WINDOWS_FILE_SHARE_READ = 0x00000001
 WINDOWS_FILE_SHARE_WRITE = 0x00000002
 WINDOWS_SHARING_VIOLATION_REASON = 'The process cannot access the file because it is being used by another process'
+PYTHON_SUBPROCESS_REQUIRED_ENV = {'SystemRoot': environ['SystemRoot']} if os_name == 'nt' else {}
 
 
 class TemporaryIsolateFactory(Protocol):
@@ -403,7 +404,13 @@ def test_run_directory_forwarded_to_suby(tmp_path, monkeypatch):
 
 
 def test_run_env_override_visible_to_subprocess(tmp_path, monkeypatch):
-    """Verify that an explicit env mapping replaces the child process environment and is visible to the command."""
+    """
+    Verify that an explicit env mapping replaces inherited application variables.
+
+    The executed command is the real Python interpreter.  On Windows it must
+    receive ``SystemRoot`` to start reliably, so that operating-system
+    prerequisite is included without preserving the parent-only test sentinel.
+    """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('THRONG_PARENT_ONLY_ENV', 'parent')
 
@@ -412,7 +419,7 @@ def test_run_env_override_visible_to_subprocess(tmp_path, monkeypatch):
         '-c',
         'import os; print(os.environ.get("THRONG_TEST_ENV", "")); print(os.environ.get("THRONG_PARENT_ONLY_ENV", ""))',
         catch_output=True,
-        env={'THRONG_TEST_ENV': 'override'},
+        env={**PYTHON_SUBPROCESS_REQUIRED_ENV, 'THRONG_TEST_ENV': 'override'},
         split=False,
     )
 
@@ -457,7 +464,13 @@ def test_run_delete_env_hidden_from_subprocess(tmp_path, monkeypatch):
 
 
 def test_run_combines_env_add_env_and_delete_env(tmp_path, monkeypatch):
-    """Verify that env, add_env, and delete_env combine into the child process environment."""
+    """
+    Verify that env, add_env, and delete_env combine in the child environment.
+
+    Windows receives only the additional ``SystemRoot`` value required to
+    execute the real Python command; it is unrelated to the variables whose
+    combination is asserted here.
+    """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv('THRONG_ENV_REMOVED', 'remove-me')
 
@@ -471,7 +484,7 @@ def test_run_combines_env_add_env_and_delete_env(tmp_path, monkeypatch):
             'print(os.environ.get("THRONG_ENV_REMOVED", ""))'
         ),
         catch_output=True,
-        env={'THRONG_ENV_BASE': 'base'},
+        env={**PYTHON_SUBPROCESS_REQUIRED_ENV, 'THRONG_ENV_BASE': 'base'},
         add_env={'THRONG_ENV_ADDED': 'added'},
         delete_env=['THRONG_ENV_REMOVED'],
         split=False,
@@ -961,8 +974,14 @@ def test_run_venv_path_uses_user_env_path_when_add_env_path_is_absent(tmp_path, 
     assert observed_add_env['PATH'] == f'{venv_python.parent}{pathsep}env-bin'
 
 
-def test_run_venv_path_respects_explicit_empty_environment(tmp_path):
-    """Verify that venv activation does not restore the parent PATH when env explicitly replaces it with nothing."""
+def test_run_venv_path_respects_explicit_environment_without_path(tmp_path):
+    """
+    Verify that venv activation does not restore parent PATH when env omits PATH.
+
+    The explicit environment is empty for POSIX behavior purposes.  On
+    Windows it additionally includes ``SystemRoot``, which is required only
+    to start the real Python subprocess and does not supply a PATH value.
+    """
     config = TemporaryDirectoryIsolationConfig(base_directory=str(tmp_path), use_venv=True)
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
     venv_python = isolate.directory / '.venv' / VENV_PYTHON_RELATIVE_PATH
@@ -975,7 +994,7 @@ def test_run_venv_path_respects_explicit_empty_environment(tmp_path):
         '-c',
         'import os; print(os.environ.get("PATH", ""))',
         catch_output=True,
-        env={},
+        env=PYTHON_SUBPROCESS_REQUIRED_ENV,
         split=False,
     )
 

@@ -1,15 +1,21 @@
 import tempfile
 from errno import EACCES
 from io import BytesIO
-from os import environ, link, pathsep
-from os import name as os_name
+from os import environ, link, name as os_name, pathsep
 from pathlib import Path
 from shutil import rmtree as remove_tree
 from stat import S_IMODE, S_IREAD, S_IRWXU, S_ISGID, S_ISUID, S_ISVTX, S_IWRITE, S_IXUSR
 from subprocess import run as run_process
 from sys import executable
-from tarfile import CHRTYPE, DIRTYPE, LNKTYPE, PAX_FORMAT, SYMTYPE, TarInfo
-from tarfile import open as open_tar
+from tarfile import (
+    CHRTYPE,
+    DIRTYPE,
+    LNKTYPE,
+    PAX_FORMAT,
+    SYMTYPE,
+    TarInfo,
+    open as open_tar,
+)
 from time import monotonic
 from typing import Dict, List, Mapping, Optional, Protocol, Tuple, cast
 
@@ -17,8 +23,12 @@ import pytest
 from cantok import CounterToken, SimpleToken, TimeoutToken
 from emptylog import EmptyLogger, MemoryLogger
 from full_match import match
-from suby import RunningCommandError, WrongCommandError, WrongDirectoryError
-from suby.subprocess_result import SubprocessResult
+from suby import (
+    RunningCommandError,
+    SubprocessResult,
+    WrongCommandError,
+    WrongDirectoryError,
+)
 
 from tests.helpers import (
     assert_any_message_contains,
@@ -34,10 +44,12 @@ from throng import (
     OperationCancelledError,
     throngs,
 )
-from throng.plugins.directory_isolate import DirectoryIsolate
-from throng.plugins.directory_isolate import mkdtemp as directory_mkdtemp
-from throng.plugins.directory_isolate import move as directory_move
-from throng.plugins.directory_isolate import run_suby as directory_run_suby
+from throng.plugins.directory_isolate import (
+    DirectoryIsolate,
+    mkdtemp as directory_mkdtemp,
+    move as directory_move,
+    run_suby as directory_run_suby,
+)
 from throng.plugins.temporary_directory_throng import (
     TemporaryDirectoryIsolationConfig,
     TemporaryDirectoryThrong,
@@ -310,7 +322,7 @@ def test_load_success_removes_staging_and_backup_directories(tmp_path, monkeypat
 
 
 def test_load_validation_failure_removes_staging_and_backup_directories(tmp_path, monkeypatch):
-    """Verify that validation failure leaves no staging or rollback directory behind."""
+    """Verify that rejection of an absolute archive path leaves no staging or rollback directory behind."""
     config = TemporaryDirectoryIsolationConfig(compression='none', base_directory=str(tmp_path))
     isolate = TemporaryDirectoryThrong(config=config).get_isolate()
     created_temp_dirs: List[Path] = []
@@ -1498,6 +1510,10 @@ def test_dump_omits_symbolic_links_from_serialized_contents(temporary_isolate):
     (source.directory / 'symbolic.txt').symlink_to(regular_file)
 
     dumped = source.dump()
+
+    with open_tar(fileobj=BytesIO(dumped), mode='r:') as archive:
+        assert archive.getnames() == ['regular.txt']
+
     target.load(dumped)
 
     assert read_tree(target.directory) == {'regular.txt': b'content'}
@@ -1535,7 +1551,12 @@ def test_dump_omits_named_pipes_from_serialized_contents(temporary_isolate):
     kept_file.write_text('content')
     run_process(['mkfifo', str(omitted_pipe)], check=True)
 
-    target.load(source.dump())
+    dumped = source.dump()
+
+    with open_tar(fileobj=BytesIO(dumped), mode='r:') as archive:
+        assert archive.getnames() == ['regular.txt']
+
+    target.load(dumped)
 
     assert read_tree(target.directory) == {'regular.txt': b'content'}
     assert not (target.directory / 'ignored.pipe').exists()

@@ -1,6 +1,6 @@
 from sys import executable
 
-from suby.subprocess_result import SubprocessResult
+from suby import SubprocessResult
 
 from throng import RunResult, throngs
 

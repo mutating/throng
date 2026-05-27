@@ -2,8 +2,7 @@ from contextlib import ExitStack, contextmanager
 from io import BytesIO
 from pathlib import Path
 from sys import platform
-from tarfile import TarInfo
-from tarfile import open as open_tar
+from tarfile import TarInfo, open as open_tar
 from typing import Dict, Iterable, Optional
 
 from dirstree import Crawler

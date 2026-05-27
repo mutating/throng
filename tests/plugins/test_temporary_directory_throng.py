@@ -15,7 +15,7 @@ import pytest
 from emptylog import MemoryLogger
 from full_match import match
 from locklib import LockTraceWrapper
-from suby.subprocess_result import SubprocessResult
+from suby import SubprocessResult
 
 from tests.helpers import hold_windows_path_open, make_tar_bytes
 from throng import (

@@ -1,11 +1,13 @@
 from throng.abstracts.isolate import AbstractIsolate as AbstractIsolate
 from throng.abstracts.throng import AbstractThrong as AbstractThrong
-from throng.errors import ArchiveUnpackError as ArchiveUnpackError
-from throng.errors import CommandExecutionError as CommandExecutionError
-from throng.errors import InstallError as InstallError
-from throng.errors import InvalidBaseDirectoryError as InvalidBaseDirectoryError
-from throng.errors import InvalidVirtualEnvPathError as InvalidVirtualEnvPathError
-from throng.errors import IsolateDeletedError as IsolateDeletedError
-from throng.errors import OperationCancelledError as OperationCancelledError
+from throng.errors import (
+    ArchiveUnpackError as ArchiveUnpackError,
+    CommandExecutionError as CommandExecutionError,
+    InstallError as InstallError,
+    InvalidBaseDirectoryError as InvalidBaseDirectoryError,
+    InvalidVirtualEnvPathError as InvalidVirtualEnvPathError,
+    IsolateDeletedError as IsolateDeletedError,
+    OperationCancelledError as OperationCancelledError,
+)
 from throng.result import RunResult as RunResult
 from throng.slots import throngs as throngs

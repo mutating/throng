@@ -2,14 +2,11 @@
 # Work around skelet.Storage exposing Any in its public class type: https://github.com/mutating/skelet/issues/24
 from functools import partial
 from io import BytesIO
-from os import X_OK, access, environ, pathsep
-from os import name as os_name
+from os import X_OK, access, environ, name as os_name, pathsep
 from pathlib import Path, PurePosixPath
-from shutil import Error as ShutilError
-from shutil import copyfileobj, move, rmtree
+from shutil import Error as ShutilError, copyfileobj, move, rmtree
 from sys import executable
-from tarfile import TarError, TarInfo
-from tarfile import open as open_tar
+from tarfile import TarError, TarInfo, open as open_tar
 from tempfile import TemporaryDirectory, mkdtemp
 from threading import Lock as ThreadLock
 from typing import (
@@ -37,11 +34,11 @@ from skelet import Field, Storage, for_tool
 from suby import (
     EnvironmentVariablesConflict,
     RunningCommandError,
+    SubprocessResult,
     WrongCommandError,
     WrongDirectoryError,
+    run as run_suby,
 )
-from suby import run as run_suby
-from suby.subprocess_result import SubprocessResult
 
 from throng.abstracts.isolate import AbstractIsolate
 from throng.errors import (

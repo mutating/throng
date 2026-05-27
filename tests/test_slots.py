@@ -4,8 +4,7 @@ import pytest
 from emptylog import EmptyLogger, LoggerProtocol
 from full_match import match
 
-from throng import AbstractIsolate, AbstractThrong, throngs
-from throng import throngs as package_throngs
+from throng import AbstractIsolate, AbstractThrong, throngs, throngs as package_throngs
 from throng.slots import throngs as slot_throngs
 
 

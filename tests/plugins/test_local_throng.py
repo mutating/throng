@@ -6,7 +6,7 @@ import pytest
 from cantok import SimpleToken
 from full_match import match
 from locklib import LockTraceWrapper
-from suby.subprocess_result import SubprocessResult
+from suby import SubprocessResult
 
 from tests.helpers import make_tar_bytes
 from throng import (
@@ -118,8 +118,8 @@ def test_local_lock_released_after_command_error(tmp_path, monkeypatch):
     assert result.stdout == 'after-error'
 
 
-def test_local_lock_released_after_cancellation(tmp_path, monkeypatch):
-    """Verify that the local lock is released after OperationCancelledError."""
+def test_local_lock_released_after_precancelled_operation(tmp_path, monkeypatch):
+    """Verify that a pre-cancelled local run releases the lock for the next command."""
     monkeypatch.chdir(tmp_path)
 
     isolate = throngs()['local'].get_isolate()

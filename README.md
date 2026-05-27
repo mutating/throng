@@ -1,4 +1,4 @@
-# throng
+![logo](https://raw.githubusercontent.com/mutating/throng/develop/docs/assets/logo_1.svg)
 
 Sometimes our programs need to execute console commands. In some cases, a command may be executed locally, while in others it may be executed in parallel across thousands of machines in the cloud. This library serves as an abstraction layer over various command execution environments, allowing you to write code once that will run anywhere. Specific execution environments are connected here as plugins (and you can even write your own!) with a unified API, and your code doesn’t need to know the internal workings of a specific plugin to run commands within it.
 

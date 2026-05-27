@@ -48,9 +48,12 @@ def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0
     not application logic: it prepares a realistic Windows test environment.
     ``CreateRestrictedToken`` clones the token belonging to the pytest
     process and, with ``DISABLE_MAX_PRIVILEGE``, removes optional privileges
-    from the child.  ``CreateProcessWithTokenW`` then starts the requested
-    Python command using that restricted token while preserving the current
-    environment and working directory.
+    from the child.  Microsoft documents ``CreateProcessAsUserW`` as the
+    launcher for a process that uses this restricted token.  For a restricted
+    version of the caller's own primary token, Windows does not require
+    ``SeAssignPrimaryTokenPrivilege``; the API temporarily enables a required
+    privilege that is already present but disabled on the caller's token.
+    The child preserves the current environment and working directory.
 
     Preserving the environment is significant for CI coverage.  The workflow
     sets ``COVERAGE_PROCESS_START`` and installs a ``.pth`` startup hook in
@@ -59,10 +62,10 @@ def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0
     ``coverage combine`` command merges code executed in this child into the
     final report.
 
-    ``CreateProcessWithTokenW`` accepts at most 1024 command-line
-    characters.  Callers must therefore pass a script file path rather than
-    a substantial inline ``python -c`` program; otherwise Windows rejects
-    the process creation call before Python starts.
+    The caller passes a script file path rather than a substantial inline
+    ``python -c`` program.  Apart from keeping native process-launch details
+    readable, this avoids coupling the test to a launcher's command-line
+    length and quoting behavior.
     """
     if os_name != 'nt':
         raise RuntimeError('Restricted Windows Python processes can only be started on Windows.')
@@ -154,19 +157,21 @@ def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0
         POINTER(HANDLE),
     ]
     create_restricted_token.restype = BOOL
-    create_process_with_token = advapi32.CreateProcessWithTokenW
-    create_process_with_token.argtypes = [
+    create_process_as_user = advapi32.CreateProcessAsUserW
+    create_process_as_user.argtypes = [
         HANDLE,
-        DWORD,
         LPWSTR,
         LPWSTR,
+        LPVOID,
+        LPVOID,
+        BOOL,
         DWORD,
         LPVOID,
         LPWSTR,
         POINTER(StartupInfo),
         POINTER(ProcessInformation),
     ]
-    create_process_with_token.restype = BOOL
+    create_process_as_user.restype = BOOL
 
     token_access = 0x0001 | 0x0002 | 0x0008
     disable_max_privilege = 0x00000001
@@ -201,18 +206,20 @@ def run_python_without_windows_privileges(*arguments: str) -> int:  # noqa: PLR0
 
         handles.callback(close_handle, restricted_token)
 
-        if not create_process_with_token(
+        if not create_process_as_user(
             restricted_token,
-            0,
-            None,
+            str(executable),
             command_line,
+            None,
+            None,
+            False,
             create_unicode_environment,
             ctypes_cast(environment_block, c_void_p),
             str(Path.cwd()),
             byref(startup_information),
             byref(process_information),
         ):
-            raise OSError(get_last_error(), 'Could not start Python with a restricted Windows process token.')
+            raise OSError(get_last_error(), 'Could not start Python through a restricted Windows process token.')
 
         handles.callback(close_handle, process_information.hThread)
         handles.callback(close_handle, process_information.hProcess)
@@ -359,7 +366,9 @@ def test_temp_base_denied_subdirectory_creation_on_windows_is_rejected_and_logge
     The test therefore keeps pytest as the supervising parent but executes the
     library call in a second Python process created through the Win32 APIs
     ``CreateRestrictedToken(DISABLE_MAX_PRIVILEGE)`` and
-    ``CreateProcessWithTokenW``.  The child still has the same user identity,
+    ``CreateProcessAsUserW``.  This is the documented API pair for running a
+    process under a restricted copy of the caller's own primary token: the
+    child still has the same user identity,
     Python installation, imports and normal filesystem access outside this
     denied directory, but it no longer has optional token privileges capable
     of bypassing the DACL.  The child records its result and ``MemoryLogger``
@@ -375,9 +384,8 @@ def test_temp_base_denied_subdirectory_creation_on_windows_is_rejected_and_logge
     ``coverage combine`` step includes in the 100-percent report.
 
     The child program is saved to a temporary ``.py`` file instead of being
-    supplied through ``python -c``.  This is required because
-    ``CreateProcessWithTokenW`` has a 1024-character command-line limit and
-    this deliberately explanatory test program is longer than that limit.
+    supplied through ``python -c`` so that native process-launch mechanics do
+    not depend on the length or quoting of this explanatory test program.
     """
     base_directory = tmp_path / 'base'
     base_directory.mkdir()

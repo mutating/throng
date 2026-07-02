@@ -17,8 +17,8 @@ dependencies = [
     'pristan>=0.0.15',
     'skelet>=0.0.21',
     'emptylog>=0.0.12',
-    'dirstree>=0.0.6',
-    'locklib>=0.0.21',
+    'dirstree>=0.0.12',
+    'locklib>=0.0.22',
     'pathspec>=0.12.0',
 ]
 classifiers = [
@@ -81,5 +81,9 @@ format.quote-style = "single"
 'Tracker' = 'https://github.com/mutating/throng/issues'
 
 [project.entry-points.throng]
-local = "throng.plugins.plugins:create_local_throng"
-temporary_directory = "throng.plugins.plugins:create_temporary_directory_throng"
+local = "throng.extensions.plugins:create_local_throng"
+temporary_directory = "throng.extensions.plugins:create_temporary_directory_throng"
+gzip = "throng.extensions.plugins:create_gzip_serializer"
+bz2 = "throng.extensions.plugins:create_bz2_serializer"
+lzma = "throng.extensions.plugins:create_lzma_serializer"
+none = "throng.extensions.plugins:create_none_serializer"

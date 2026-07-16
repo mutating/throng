@@ -18,7 +18,7 @@ dependencies = [
     'skelet>=0.0.21',
     'emptylog>=0.0.12',
     'dirstree>=0.0.12',
-    'locklib>=0.0.23',
+    'locklib>=0.0.25',
     'pathspec>=0.12.0',
 ]
 classifiers = [

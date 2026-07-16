@@ -12,7 +12,7 @@ description = 'Running commands in isolated environments'
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    'suby>=0.0.12',
+    'suby>=0.0.13',
     'cantok>=0.0.42',
     'pristan>=0.0.23',
     'skelet>=0.0.21',

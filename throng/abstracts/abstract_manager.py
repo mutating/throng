@@ -25,7 +25,7 @@ class ContextIsolateManager:
 
     def __exit__(self, exc_type: Optional[type[BaseException]], exc_value: Optional[BaseException], traceback: Optional[TracebackType]) -> None:
         if self.isolate is None:
-            raise CannotCancelNonExistingIsolateError()
+            raise CannotCancelNonExistingIsolateError("You cannot exit the context manager if you haven't entered it yet.")
         self.isolate.kill()
 
 

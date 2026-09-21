@@ -9,7 +9,7 @@ class LocalIsolate(AbstractIsolate):
     def __init__(self, lock: ContextLockProtocol) -> None:
         self.lock = lock
 
-    def run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:
+    def run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
         with self.lock:
             return run(command, token=token, catch_output=True)
 

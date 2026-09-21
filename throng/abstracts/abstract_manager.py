@@ -43,9 +43,8 @@ class AbstractManager(ABC):
         self.path = real_path
 
     def run(self, command: str, token: AbstractToken = DefaultToken()) -> RunResultProtocol:  # noqa: B008
-        state = self.read()
-        isolate = self.get(state)
-        return isolate.run(command, token=token)
+        with self.scope as runner:
+            return runner.run(command, token=token)
 
     @property
     def scope(self) -> ContextIsolateManager:

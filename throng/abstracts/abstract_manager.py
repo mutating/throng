@@ -30,9 +30,9 @@ class ContextIsolateManager:
 
 
 class AbstractManager(ABC):
-    path: Union[str, Path]
+    path: Path
 
-    def __init__(self, path: Union[str, Path]) -> None:
+    def __init__(self, path: Path) -> None:
         self.path = path
 
     def run(self, command: str, token: AbstractToken = DefaultToken()) -> RunResultProtocol:  # noqa: B008

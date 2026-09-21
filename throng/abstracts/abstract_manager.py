@@ -32,8 +32,15 @@ class ContextIsolateManager:
 class AbstractManager(ABC):
     path: Path
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(self, path: Optional[Union[str, Path]]) -> None:
+        if path is None:
+            real_path: Path = Path.cwd()
+        elif isinstance(path, str):
+            real_path = Path(path)
+        else:
+            real_path = path
+
+        self.path = real_path
 
     def run(self, command: str, token: AbstractToken = DefaultToken()) -> RunResultProtocol:  # noqa: B008
         state = self.read()

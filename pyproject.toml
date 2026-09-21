@@ -79,11 +79,3 @@ format.quote-style = "single"
 [project.urls]
 'Source' = 'https://github.com/mutating/throng'
 'Tracker' = 'https://github.com/mutating/throng/issues'
-
-[project.entry-points.throng]
-local = "throng.extensions.plugins:create_local_throng"
-temporary_directory = "throng.extensions.plugins:create_temporary_directory_throng"
-gzip = "throng.extensions.plugins:create_gzip_serializer"
-bz2 = "throng.extensions.plugins:create_bz2_serializer"
-lzma = "throng.extensions.plugins:create_lzma_serializer"
-none = "throng.extensions.plugins:create_none_serializer"

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
-from types import TracebackType
-from typing import Union, Optional
 from pathlib import Path
+from types import TracebackType
+from typing import Optional, Union
 
 from cantok import AbstractToken, DefaultToken
 

@@ -1,6 +1,6 @@
 from cantok import AbstractToken, DefaultToken
-from suby import run, SubprocessResult
 from locklib import ContextLockProtocol
+from suby import SubprocessResult, run
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
 

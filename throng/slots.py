@@ -1,12 +1,11 @@
 from pathlib import Path
-from typing import Dict
-from typing import Union, Optional
+from typing import Dict, Optional, Union
 
 from pristan import slot
 
-from throng import AbstractManager, LocalManager
+from throng import AbstractManager
 
 
-@slot
+@slot(entrypoint_group='throng')
 def throng(path: Optional[Union[str, Path]]) -> Dict[str, AbstractManager]:
     ...

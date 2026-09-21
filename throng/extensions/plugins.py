@@ -1,7 +1,7 @@
 from pathlib import Path
-from typing import Union, Optional
+from typing import Optional, Union
 
-from throng import throng, LocalManager
+from throng import LocalManager, throng
 
 
 @throng.plugin(unique=True)

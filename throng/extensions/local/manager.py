@@ -1,5 +1,5 @@
-from threading import Lock
 from pathlib import Path
+from threading import Lock
 
 from throng import AbstractManager
 from throng.extensions.local.isolate import LocalIsolate

@@ -6,6 +6,9 @@ from throng.abstracts.result_protocol import RunResultProtocol
 
 
 class AbstractIsolate(ABC):
+    def __del__(self) -> None:
+        self.kill()
+
     @abstractmethod
     def run(self, command: str, token: AbstractToken = DefaultToken()) -> RunResultProtocol:  # noqa: B008
         ...

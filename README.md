@@ -220,3 +220,11 @@ print(isolate.run('python -c "import time; time.sleep(1000)"', token=TimeoutToke
 ```
 
 Cancelling a token does not guarantee that the team in the isolate will stop working early; it simply requests that they do so. Whether or not to respond to such a request is the plugin’s responsibility. Do not base your code on the expectation that isolates will always read the token’s status.
+
+When you no longer need a particular isolate, call its `kill()` method:
+
+```python
+isolate.kill()
+```
+
+Do not attempt to call a command in an isolate that has been destroyed—this may cause an exception. The execution time of the method when it is called is not guaranteed—there may be a network call or some other resource-intensive operation happening behind the scenes. However, plugin authors are advised to make this operation fast.

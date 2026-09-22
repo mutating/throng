@@ -24,7 +24,7 @@ class TemporaryDirectoryIsolate(AbstractIsolate):
         with self.lock:
             if self.used:
                 raise DirectoryDoesNotExistError('You cannot reuse a destroyed isolate.')
-            return run(command, token=token, catch_output=True, directory=self.path)
+            return run(command, token=token, catch_output=True, catch_exceptions=True, directory=self.path)
 
     def read(self) -> bytes:
         with self.lock:

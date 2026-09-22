@@ -11,7 +11,7 @@ class LocalIsolate(AbstractIsolate):
 
     def run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
         with self.lock:
-            return run(command, token=token, catch_output=True)
+            return run(command, token=token, catch_output=True, catch_exceptions=True)
 
     def read(self) -> bytes:
         return b''

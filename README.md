@@ -201,7 +201,7 @@ state = manager.read()
 isolate = manager.get(state)
 ```
 
-A command that can be passed to an isolator is a string, usually containing Bash code; however, the specific string format accepted and its interpretation are the responsibility of the particular plugin. You must understand and expect that plugins may represent completely different internal structures of isolation environments—in some cases, your commands may be executed locally, while in others they may be executed on remote server farms running an unknown operating system designed for cluster computing. Your code cannot expect a precisely guaranteed output from commands, and it is recommended that it double-check the results of command execution.
+A command that can be passed to an isolate is a string, usually containing Bash code; however, the specific string format accepted and its interpretation are the responsibility of the particular plugin. You must understand and expect that plugins may represent completely different internal structures of isolation environments—in some cases, your commands may be executed locally, while in others they may be executed on remote server farms running an unknown operating system designed for cluster computing. Your code cannot expect a precisely guaranteed output from commands, and it is recommended that it double-check the results of command execution.
 
 As a result of executing any command, you will receive a special object that must contain the following fields:
 

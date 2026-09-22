@@ -1,12 +1,13 @@
 from pathlib import Path
 from threading import Lock
+from typing import Optional, Union
 
 from throng import AbstractManager
 from throng.extensions.local.isolate import LocalIsolate
 
 
 class LocalManager(AbstractManager):
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Optional[Union[str, Path]]) -> None:
         self.lock = Lock()
         super().__init__(path)
 

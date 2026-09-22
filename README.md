@@ -15,6 +15,7 @@ This library provides:
 - [**Quick start**](#quick-start)
 - [**Why?**](#why)
 - [**Key concepts**](#key-concepts)
+- [**Isolates and command execution**](#isolates-and-command-execution)
 
 
 ## Installation
@@ -178,3 +179,30 @@ print(manager.run('ls').stdout)
 Generally, creating a new isolate for each command is costly, since the operations involved in reading the state and creating isolates can be expensive. Do this only if you are certain that you do not plan to reuse this environment.
 
 Now that you know all the necessary basic concepts, read on to learn the details of working with `throng` — such as how the built-in plugins work or how to create your own.
+
+
+## Isolates and command execution
+
+As you may have read above, isolates are created by the selected manager and are responsible for one thing: executing commands. Your code should not expect a specific way in which a command will be executed, but it can pass commands to the isolate and receive the result in the specified format.
+
+As a reminder, to obtain an isolate, you need to ask the manager to check the status and then, based on that status, request the isolate object from it:
+
+```python
+from throng import throng
+
+managers = throng('.')
+manager = managers['temporary_directory']
+state = manager.read()
+isolate = manager.get(state)
+```
+
+A command that can be passed to an isolator is a string, usually containing Bash code; however, the specific string format accepted and its interpretation are the responsibility of the particular plugin. You must understand and expect that plugins may represent completely different internal structures of isolation environments—in some cases, your commands may be executed locally, while in others they may be executed on remote server farms running an unknown operating system designed for cluster computing. Your code cannot expect a precisely guaranteed output from commands, and it is recommended that it double-check the results of command execution.
+
+As a result of executing any command, you will receive a special object that must contain the following fields:
+
+- `success` (**bool**) - a flag indicating whether the command was executed successfully.
+- `returncode` (**int | None**) - the [return code](https://en.wikipedia.org/wiki/Exit_status) of the executed command, or `None` if the command did not even begin execution for some reason.
+- `stdout` (**str | None**) - the program's standard text output, or `None` if the command was not executed.
+- `stderr` (**str | None**) - the standard error stream, or `None` if the command was not executed.
+
+The availability of these fields is guaranteed, and you can base your code on them. Individual plugin implementations may add their own fields to this list, but you should not expect anything else in your programs.

@@ -7,5 +7,5 @@ from throng import AbstractManager
 
 
 @slot(entrypoint_group='throng')
-def throng(path: Optional[Union[str, Path]]) -> Dict[str, AbstractManager]:
+def throng(path: Optional[Union[str, Path]]) -> Dict[str, AbstractManager]:  # type: ignore[empty-body]
     ...

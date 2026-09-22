@@ -215,3 +215,5 @@ from cantok import TimeoutToken
 print(isolate.run('python -c "import time; time.sleep(1000)"', token=TimeoutToken(0.1)))
 #> SubprocessResult(id='01fcdbacb6d911f1808df6817fdcabf4', stdout='', stderr='', returncode=-9, killed_by_token=True)
 ```
+
+Cancelling a token does not guarantee that the team in the isolate will stop working early; it simply requests that they do so. Whether or not to respond to such a request is the plugin’s responsibility. Do not base your code on the expectation that isolates will always read the token’s status.

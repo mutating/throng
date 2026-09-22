@@ -13,6 +13,7 @@ This library provides:
 
 - [**Installation**](#installation)
 - [**Quick start**](#quick-start)
+- [**Why?**](#why)
 
 
 ## Installation

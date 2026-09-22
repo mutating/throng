@@ -14,6 +14,7 @@ This library provides:
 - [**Installation**](#installation)
 - [**Quick start**](#quick-start)
 - [**Why?**](#why)
+- [**Key concepts**](#key-concepts)
 
 
 ## Installation
@@ -63,3 +64,6 @@ Importantly, both parallelism and isolation come at a cost. For example, if you 
 Most systems that offer you various ways to execute commands are typically tied to a specific infrastructure—whether physical or software-based—whose position on the two axes described above is fixed. If you want to write your own logic on top of such systems, your code will generally contain duplicate components. And with every new way of executing commands you add, your codebase will become bloated.
 
 `throng` solves this problem. Various command execution systems are abstracted here into a separate layer that can be easily swapped out for another using the modern [`pristan`](https://github.com/mutating/pristan) plugin system. You can enable the plugin that is most optimal for you in terms of operation cost, while also offering the right balance on the axes of parallelism and execution isolation. Now you don’t need to rewrite or bloat your program when you want to add another way to execute code—just select the appropriate plugin and connect it.
+
+
+## Key concepts

@@ -46,13 +46,13 @@ class AbstractManager(ABC):
     def __repr__(self) -> str:
         return describe_call(type(self).__name__, [str(self.path)], {})
 
-    def run(self, command: str, token: AbstractToken = DefaultToken()) -> RunResultProtocol:  # noqa: B008
-        with self.scope as runner:
-            return runner.run(command, token=token)
-
     @property
     def scope(self) -> ContextIsolateManager:
         return ContextIsolateManager(self)
+
+    def run(self, command: str, token: AbstractToken = DefaultToken()) -> RunResultProtocol:  # noqa: B008
+        with self.scope as runner:
+            return runner.run(command, token=token)
 
     @abstractmethod
     def get(self, state: bytes) -> AbstractIsolate:

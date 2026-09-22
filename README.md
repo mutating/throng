@@ -227,4 +227,4 @@ When you no longer need a particular isolate, call its `kill()` method:
 isolate.kill()
 ```
 
-Do not attempt to call a command in an isolate that has been destroyed—this may cause an exception. The execution time of the method when it is called is not guaranteed—there may be a network call or some other resource-intensive operation happening behind the scenes. However, plugin authors are advised to make this operation fast.
+Do not attempt to call a command in an isolate that has been destroyed — this may cause an exception. The execution time of the method when it is called is not guaranteed—there may be a network call or some other resource-intensive operation happening behind the scenes. However, plugin authors are advised to make this operation fast.

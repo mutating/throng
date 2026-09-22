@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 from types import TracebackType
-from typing import Optional, Union
+from typing import Optional, Type, Union
 
 from cantok import AbstractToken, DefaultToken
 from printo import describe_call
@@ -24,7 +24,7 @@ class ContextIsolateManager:
         self.isolate = self.manager.get(state)
         return self.isolate
 
-    def __exit__(self, exc_type: Optional[type[BaseException]], exc_value: Optional[BaseException], traceback: Optional[TracebackType]) -> None:
+    def __exit__(self, exc_type: Optional[Type[BaseException]], exc_value: Optional[BaseException], traceback: Optional[TracebackType]) -> None:
         if self.isolate is None:
             raise CannotCancelNonExistingIsolateError("You cannot exit the context manager if you haven't entered it yet.")
         self.isolate.kill()

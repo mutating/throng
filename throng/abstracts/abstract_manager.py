@@ -4,6 +4,7 @@ from types import TracebackType
 from typing import Optional, Union
 
 from cantok import AbstractToken, DefaultToken
+from printo import describe_call
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.result_protocol import RunResultProtocol
@@ -41,6 +42,9 @@ class AbstractManager(ABC):
             real_path = path
 
         self.path = real_path
+
+    def __repr__(self) -> str:
+        return describe_call(type(self).__name__, [str(self.path)], {})
 
     def run(self, command: str, token: AbstractToken = DefaultToken()) -> RunResultProtocol:  # noqa: B008
         with self.scope as runner:

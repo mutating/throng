@@ -176,3 +176,5 @@ print(manager.run('ls').stdout)
 ```
 
 Generally, creating a new isolate for each command is costly, since the operations involved in reading the state and creating isolates can be expensive. Do this only if you are certain that you do not plan to reuse this environment.
+
+Now that you know all the necessary basic concepts, read on to learn the details of working with `throng` — such as how the built-in plugins work or how to create your own.

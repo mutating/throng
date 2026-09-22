@@ -16,6 +16,8 @@ This library provides:
 - [**Why?**](#why)
 - [**Key concepts**](#key-concepts)
 - [**Isolates and command execution**](#isolates-and-command-execution)
+- [**Managers**](#managers)
+
 
 
 ## Installation
@@ -228,3 +230,8 @@ isolate.kill()
 ```
 
 Do not attempt to call a command in an isolate that has been destroyed — this may cause an exception. The execution time of the method when it is called is not guaranteed—there may be a network call or some other resource-intensive operation happening behind the scenes. However, plugin authors are advised to make this operation fast.
+
+With some “expensive” isolates, it may be important to you that they do not remain in a suspended state if, for example, your code “forgot” to destroy the isolate, or if it terminated abnormally without having had time to release resources. Throng does not provide such guarantees, as they depend on the specific infrastructure used to run the commands. Check the documentation for the specific plugin to see if this kind of problem could arise in its infrastructure and how it is recommended to resolve it.
+
+
+## Managers

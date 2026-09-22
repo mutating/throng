@@ -65,5 +65,7 @@ Most systems that offer you various ways to execute commands are typically tied 
 
 `throng` solves this problem. Various command execution systems are abstracted here into a separate layer that can be easily swapped out for another using the modern [`pristan`](https://github.com/mutating/pristan) plugin system. You can enable the plugin that is most optimal for you in terms of operation cost, while also offering the right balance on the axes of parallelism and execution isolation. Now you don’t need to rewrite or bloat your program when you want to add another way to execute code—just select the appropriate plugin and connect it.
 
+Now it is the plugin's responsibility to determine how much of your code can be executed in parallel and to what extent different executions will be isolated from one another. Your code knows nothing about this—it simply executes commands and receives results. You write compact and powerful programs, isolated from the specifics of execution on distributed systems or virtual machines, debug them locally, and then run them anywhere.
+
 
 ## Key concepts

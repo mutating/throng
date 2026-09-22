@@ -190,7 +190,7 @@ Now that you know all the necessary basic concepts, read on to learn the details
 
 As you may have read above, isolates are created by the selected manager and are responsible for one thing: executing commands. Your code should not expect a specific way in which a command will be executed, but it can pass commands to the isolate and receive the result in the specified format.
 
-As a reminder, to obtain an isolate, you need to ask the manager to check the status and then, based on that status, request the isolate object from it:
+As a reminder, to obtain an isolate, you need to ask the manager to get the state and then, based on that state, request the isolate object from it:
 
 ```python
 from throng import throng

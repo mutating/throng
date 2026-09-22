@@ -69,3 +69,110 @@ Now it is the plugin's responsibility to determine how much of your code can be 
 
 
 ## Key concepts
+
+When working with the `throng` system, you need to understand four key concepts:
+
+- What a plugin is.
+- What an isolate is.
+- What an isolate manager is.
+- How the initial state is handled.
+
+The main idea behind `throng` is that your main program doesn't “know” exactly how its command will be executed. It simply issues the command and receives the result. Different execution methods are connected as plugins that can be easily installed and removed, and from which you can choose.
+
+Throng provides a special object that you can import and call like a regular function; in `pristan` terminology, such an object is called a slot. When called, it returns a dictionary whose keys are the names of all available plugins, and whose values are special managers—whose capabilities we’ll explore later. Immediately after installing `throng`, while no additional plugins have been installed yet, calling the slot will look something like this:
+
+```python
+from throng import throng
+
+managers = throng('.')
+print(managers)
+#> {'local': LocalManager('.'), 'temporary_directory': TemporaryDirectoryManager('.')}
+```
+
+> ↑ We pass a point as a reference to the current directory, the state of which will serve as the basis for all isolates that are created (you'll learn what these are later).
+
+As you can see, by default, `throng` comes with two built-in plugins. We’ll take a closer look at them a little later. Let’s retrieve the manager object returned by one of the plugins and explore the features it offers.
+
+```python
+manager = managers['local']
+```
+
+All manager objects have a uniform API, which allows them to be used in the same way, making it easy to swap one for another. The manager’s responsibility is to manage the lifecycle of isolates, and its main operations relate specifically to this.
+
+An isolate is a special object responsible for executing commands. Operations related to its lifecycle come from outside; that is, it is always created and destroyed by someone (usually a manager). Thus, responsibility is clearly divided between them: the isolate is responsible only for executing commands, while the manager handles lifecycle issues.
+
+To create an instance of an isolate, use the manager to read the initial state, and then use it to create the isolate::
+
+```python
+state = manager.read()
+isolate = manager.get(state)
+```
+
+> ⓘ In general, a “state” is simply a bunch of bytes, and you have no way of knowing what it actually represents. Each plugin may read the state differently, include different aspects of your system in it, and save it all in a format that works best for it. Never expect a specific data format, and don’t access this state on your own. If you’re interested in this for some reason, study the inner workings of the plugin you’ve chosen.
+
+Once the isolate has been created, you can try running a command in it:
+
+```python
+result = isolate.run('ls')
+print(result.stdout)
+#> LICENSE
+#> README.md
+#> docs
+#> pyproject.toml
+#> requirements_dev.txt
+#> tests
+#> throng
+#> venv
+```
+
+> ↑ Just in case: The author ran this command in the throng project directory; the output of the `ls` command may be different for you.
+
+When we no longer need a specific isolate, you must destroy it by calling its `kill()` method:
+
+```python
+isolate.kill()
+```
+
+It may be necessary to destroy isolates to conserve resources if those resources were specifically allocated for that isolate. For example, if an isolate abstracts a virtual machine from you, the memory and other resources allocated to it will remain occupied until you destroy the isolate. The specific details of what needs to be done to free up the occupied resources are abstracted from your code and are entirely determined by the internal workings of the connected plugin.
+
+However, determining the lifecycle of isolates “manually” can be too tedious, so you might find it more convenient to use a context manager for this:
+
+```python
+with manager.scope as scope:
+    scope.run('touch x.txt')
+    scope.run('touch y.txt')
+    scope.run('touch z.txt')
+    print(scope.run('ls').stdout)
+#> LICENSE
+#> README.md
+#> docs
+#> pyproject.toml
+#> requirements_dev.txt
+#> tests
+#> throng
+#> venv
+#> x.txt
+#> y.txt
+#> z.txt
+```
+
+As you can see, in the example above, there was no need to destroy the isolate; it was destroyed automatically after exiting the code block where its commands were executed.
+
+However, in some cases, even creating a context is an unnecessary complication. You may need an isolate simply to execute a command within it and get the result. In this case, instead of creating an isolate, you can pass the command directly to the manager, which will create an instance of the isolate “behind the scenes” specifically for that command, pass the command to it, destroy the isolate, and return the command to you:
+
+```python
+print(manager.run('ls').stdout)
+#> LICENSE
+#> README.md
+#> docs
+#> pyproject.toml
+#> requirements_dev.txt
+#> tests
+#> throng
+#> venv
+#> x.txt
+#> y.txt
+#> z.txt
+```
+
+Generally, creating a new isolate for each command is costly, since the operations involved in reading the state and creating isolates can be expensive. Do this only if you are certain that you do not plan to reuse this environment.

@@ -206,3 +206,12 @@ As a result of executing any command, you will receive a special object that mus
 - `stderr` (**str | None**) - the standard error stream, or `None` if the command was not executed.
 
 The availability of these fields is guaranteed, and you can base your code on them. Individual plugin implementations may add their own fields to this list, but you should not expect anything else in your programs.
+
+In addition to the command, you can pass one more thing to the isolator—a cancellation token from the cantok library. A token is a special object that allows the isolator to know when to stop executing the command. It might look something like this:
+
+```python
+from cantok import TimeoutToken
+
+print(isolate.run('python -c "import time; time.sleep(1000)"', token=TimeoutToken(0.1)))
+#> SubprocessResult(id='01fcdbacb6d911f1808df6817fdcabf4', stdout='', stderr='', returncode=-9, killed_by_token=True)
+```

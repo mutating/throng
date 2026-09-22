@@ -44,7 +44,7 @@ class AbstractManager(ABC):
         self.path = real_path
 
     def __repr__(self) -> str:
-        return describe_call(type(self).__name__, [str(self.path)], {})
+        return describe_call(type(self).__name__, [str(self.path)], {})  # type: ignore[misc]
 
     @property
     def scope(self) -> ContextIsolateManager:

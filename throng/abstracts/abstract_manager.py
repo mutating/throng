@@ -19,7 +19,7 @@ class ContextIsolateManager:
         self.manager = manager
         self.isolate = None
 
-    def __enter__(self):
+    def __enter__(self) -> AbstractIsolate:
         state = self.manager.read()
         self.isolate = self.manager.get(state)
         return self.isolate

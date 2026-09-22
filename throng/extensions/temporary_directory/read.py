@@ -1,10 +1,8 @@
-from pathlib import Path
-from io import BytesIO
 import tarfile
+from io import BytesIO
+from pathlib import Path
 
 from dirstree import Crawler
-
-
 
 
 def read_directory(path: Path) -> bytes:

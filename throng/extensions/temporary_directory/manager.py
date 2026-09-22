@@ -1,5 +1,3 @@
-from pathlib import Path
-from threading import Lock
 
 from throng import AbstractManager
 from throng.extensions.temporary_directory.isolate import TemporaryDirectoryIsolate

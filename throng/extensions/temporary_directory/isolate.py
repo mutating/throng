@@ -1,16 +1,15 @@
-from tempfile import TemporaryDirectory
-from threading import Lock
-from pathlib import Path
 import tarfile
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Lock
 
 from cantok import AbstractToken, DefaultToken
-from locklib import ContextLockProtocol
 from suby import SubprocessResult, run
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
-from throng.extensions.temporary_directory.read import read_directory
 from throng.extensions.temporary_directory.errors import DirectoryDoesNotExistError
+from throng.extensions.temporary_directory.read import read_directory
 
 
 class TemporaryDirectoryIsolate(AbstractIsolate):

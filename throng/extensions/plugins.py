@@ -1,10 +1,9 @@
 from pathlib import Path
 from typing import Optional, Union
 
-
+from throng import throng
 from throng.extensions.local.manager import LocalManager
 from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
-from throng import throng
 
 
 @throng.plugin(unique=True)

@@ -7,4 +7,4 @@ def test_simple_print():
     assert result.success
     assert result.returncode == 0
     assert result.stderr == ''
-    assert result.stdout == 'lol'
+    assert result.stdout == 'lol\n'

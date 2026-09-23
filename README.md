@@ -282,3 +282,23 @@ And here's the closed one:
 ```python
 manager.run('ls')
 ```
+
+The `chain()` method, which executes a series of commands at once, can also be used in both open and closed modes. The open mode is called from an isolate:
+
+```python
+isolate.chain(
+    'touch x.txt',
+    'touch y.txt',
+    'touch z.txt',
+)
+```
+
+And the closed way is called directly from the manager:
+
+```python
+manager.chain(
+    'touch x.txt',
+    'touch y.txt',
+    'touch z.txt',
+)
+```

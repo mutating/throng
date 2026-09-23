@@ -3,7 +3,7 @@ from typing import List
 
 from cantok import AbstractToken, DefaultToken
 
-from throng.abstracts.result_protocol import RunResultProtocol
+from throng.abstracts.results import RunResultProtocol, SimpleRunResult
 
 
 class AbstractIsolate(ABC):
@@ -29,5 +29,11 @@ class AbstractIsolate(ABC):
             if token:
                 result = self.run(command, token=token)
                 results.append(result)
+            else:
+                results.append(
+                    SimpleRunResult(
+                        success=False,
+                    )
+                )
 
         return results

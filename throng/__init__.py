@@ -2,7 +2,7 @@
 
 from throng.abstracts.abstract_isolate import AbstractIsolate as AbstractIsolate
 from throng.abstracts.abstract_manager import AbstractManager as AbstractManager
-from throng.abstracts.result_protocol import RunResultProtocol as RunResultProtocol
+from throng.abstracts.results import RunResultProtocol as RunResultProtocol
 from throng.slots import throng as throng
 from throng.extensions.plugins import (
     local as local,

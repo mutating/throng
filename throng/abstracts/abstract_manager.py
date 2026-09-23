@@ -7,7 +7,7 @@ from cantok import AbstractToken, DefaultToken
 from printo import describe_call
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
-from throng.abstracts.result_protocol import RunResultProtocol
+from throng.abstracts.results import RunResultProtocol
 from throng.errors import CannotCancelNonExistingIsolateError
 
 

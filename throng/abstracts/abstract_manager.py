@@ -54,7 +54,7 @@ class AbstractManager(ABC):
         with self.scope as runner:
             return runner.run(command, token=token)
 
-    def chain(self, *commands: str, token: AbstractToken = DefaultToken()) -> List[RunResultProtocol]:
+    def chain(self, *commands: str, token: AbstractToken = DefaultToken()) -> List[RunResultProtocol]:  # noqa: B008
         with self.scope as runner:
             return runner.chain(*commands, token=token)
 

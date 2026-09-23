@@ -22,7 +22,7 @@ class AbstractIsolate(ABC):
     def kill(self) -> None:
         ...
 
-    def chain(self, *commands: str, token: AbstractToken = DefaultToken()) -> List[RunResultProtocol]:
+    def chain(self, *commands: str, token: AbstractToken = DefaultToken()) -> List[RunResultProtocol]:  # noqa: B008
         results = []
 
         for command in commands:

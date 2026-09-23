@@ -347,3 +347,20 @@ managers = throng('.')
 manager = managers['temporary_directory']
 ```
 
+As you can see, the built-in plugins are very limited, and they will almost certainly not be enough for you, so you can install additional ones. Any Throng plugin is simply a Python package that can be installed via pip or uv and is packaged in a specific way using Pristan. In other words, all you need to install a plugin is a command like this:
+
+```bash
+pip install plugin-name
+```
+
+Once the package is installed, it will automatically be available in your code for you to select and execute commands within it:
+
+```python
+managers = throng('.')
+print(managers)
+#> {'local': LocalManager('.'), 'temporary_directory': TemporaryDirectoryManager('.'), 'plugin_name': ThirdPartyManager('.')}
+
+manager = managers['plugin_name']
+```
+
+Once you've installed the plugin and loaded it into your code, you can use it just like any of the built-in plugins. For information on the features of third-party plugins—such as the degree of command isolation or the level of parallelism—please refer to the documentation included with the plugin.

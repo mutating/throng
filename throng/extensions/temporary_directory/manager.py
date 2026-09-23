@@ -1,4 +1,3 @@
-
 from throng import AbstractManager
 from throng.extensions.temporary_directory.isolate import TemporaryDirectoryIsolate
 from throng.extensions.temporary_directory.read import read_directory

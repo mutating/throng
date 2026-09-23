@@ -303,4 +303,5 @@ manager.chain(
 )
 ```
 
-As you can see, the open and closed approaches aren’t all that different. So which one should you choose? For simple scenarios, the closed approach is almost always preferable: it allows you to focus on your logic without having to worry about isolator management. The open approach is intended for exceptional situations, such as when, for some reason, the lifecycle of isolates becomes lengthy and the logic for handling them becomes complex and nonlinear.
+As you can see, the open and closed approaches aren’t all that different. So which one should you choose? For simple scenarios, the closed approach is almost always preferable: it allows you to focus on your logic without having to worry about isolator management. The open approach is intended for exceptional situations, such as when, for some reason, the lifecycle of an isolate becomes long and the logic for working with it becomes complex and nonlinear. For example, if your code frequently reloads a saved state instead of reading the current state each time.
+

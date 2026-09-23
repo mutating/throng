@@ -231,7 +231,7 @@ isolate.kill()
 
 Do not attempt to call a command in an isolate that has been destroyed — this may cause an exception. The execution time of the method when it is called is not guaranteed—there may be a network call or some other resource-intensive operation happening behind the scenes. However, plugin authors are advised to make this operation fast.
 
-With some “expensive” isolates, it may be important to you that they do not remain in a suspended state if, for example, your code “forgot” to destroy the isolate, or if it terminated abnormally without having had time to release resources. Throng does not provide such guarantees, as they depend on the specific infrastructure used to run the commands. Check the documentation for the specific plugin to see if this kind of problem could arise in its infrastructure and how it is recommended to resolve it.
+With some “expensive” isolates, it may be important to you that they do not remain in a suspended state if, for example, your code “forgot” to destroy the isolate, or if it terminated abnormally without having had time to release resources. `throng` does not provide such guarantees, as they depend on the specific infrastructure used to run the commands. Check the documentation for the specific plugin to see if this kind of problem could arise in its infrastructure and how it is recommended to resolve it.
 
 
 ## Managers
@@ -240,4 +240,9 @@ The primary task of managers is to create isolates and, in some cases, to manage
 
 How does this work? For example, a manager might maintain a pool of executables behind the scenes, and a new isolate will be created only when space becomes available in that pool. When your code requests a new isolate, the manager may “hang” until the necessary resources become available. The manager may also maintain a mutex or semaphore internally to limit local concurrency. In some cases, it may take into account feedback signals from the execution system and adjust its resource requests accordingly. All these details are internal aspects of the manager’s implementation, and that’s where the magic lies: you simply request an isolate from the manager and wait, and it handles everything else.
 
-Unfortunately, execution abstraction comes at a cost. For you as a user, the main drawback of Throng may be the unpredictability of wait times for basic operations in your software, since you can’t tell for sure whether a command is executed immediately via a local subprocess or is sent to a data center on the other side of the globe.
+Unfortunately, execution abstraction comes at a cost. For you as a user, the main drawback of `throng` may be the unpredictability of wait times for basic operations in your software, since you can’t tell for sure whether a command is executed immediately via a local subprocess or is sent to a data center on the other side of the globe.
+
+Although we’ve already shown above how to obtain a manager and how to use it, we’ll briefly review this in this section so that everything related to managers is covered here. Essentially, there are two ways to use `throng`:
+
+- Query individual isolate objects and work with them — let’s call this the "open" method.
+- Passing commands directly to the manager without retrieving the isolates for them — let’s call this the "closed" method, since the isolates remain hidden from you.

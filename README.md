@@ -17,6 +17,7 @@ This library provides:
 - [**Key concepts**](#key-concepts)
 - [**Isolates and command execution**](#isolates-and-command-execution)
 - [**Managers**](#managers)
+- [**Plugins**](#plugins)
 
 
 ## Installation
@@ -303,3 +304,46 @@ manager.chain(
 ```
 
 As you can see, the open and closed approaches aren’t all that different. So which one should you choose? For simple scenarios, the closed approach is almost always preferable: it allows you to focus on your logic without having to worry about isolator management. The open approach is intended for exceptional situations, such as when, for some reason, the lifecycle of an isolate becomes long and the logic for working with it becomes complex and nonlinear. For example, if your code frequently reloads a saved state instead of reading the current state each time.
+
+
+## Plugins
+
+The main feature of `throng` is that it doesn’t force you to use any specific method for executing commands, with all its advantages and limitations. You have the freedom to choose. This is made possible by the powerful pristan plugin system.
+
+Throng includes two basic plugins:
+
+- A plugin for running commands **locally**.
+- A plugin for running commands in **temporary directories**.
+
+Don’t expect too much from these plugins. They are designed to run commands directly on your computer—without sophisticated isolation methods, without the ability to scale to a computing cluster, and so on. They serve as placeholders until a user of your program finds a better plugin, as well as for testing your logic that works with `throng`.
+
+The local execution plugin runs commands directly in the directory you specify:
+
+```python
+from throng import throng
+
+managers = throng('.')
+manager = managers['local']
+
+print(manager.run('ls').stdout)
+#> LICENSE
+#> README.md
+#> docs
+#> pyproject.toml
+#> requirements_dev.txt
+#> tests
+#> throng
+#> venv
+```
+
+With the open method of accessing isolates, both reading the current directory and “recreating” an isolate from it are fake operations. These operations simply transfer an empty set of bytes. This is fast, but it’s not secure, because any changes you make alter your main set of files in the specified directory, rather than the copy you specifically created for experiments.
+
+The plugin that uses temporary directories does almost the same thing, but when each isolate is created, the following actually happens: all files in the current directory (and this is important: only files, not empty directories or symlinks) are packed into a tar archive; then a temporary directory with a random name is created on your computer; and finally, the archive is extracted there. When the isolate is destroyed, the entire directory that was created is deleted. Commands are executed via subprocesses, which are passed the path to the temporary directory for command execution.
+
+You can retrieve the manager from the plugin that handles temporary directories using the `'temporary_directory'` key:
+
+```python
+managers = throng('.')
+manager = managers['temporary_directory']
+```
+

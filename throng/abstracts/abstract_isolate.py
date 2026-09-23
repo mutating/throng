@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import List
 
 from cantok import AbstractToken, DefaultToken
 
@@ -20,3 +21,13 @@ class AbstractIsolate(ABC):
     @abstractmethod
     def kill(self) -> None:
         ...
+
+    def chain(self, *commands: str, token: AbstractToken = DefaultToken()) -> List[RunResultProtocol]:
+        results = []
+
+        for command in commands:
+            if token:
+                result = self.run(command, token=token)
+                results.append(result)
+
+        return results

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 from types import TracebackType
-from typing import Optional, Type, Union
+from typing import List, Optional, Type, Union
 
 from cantok import AbstractToken, DefaultToken
 from printo import describe_call
@@ -53,6 +53,10 @@ class AbstractManager(ABC):
     def run(self, command: str, token: AbstractToken = DefaultToken()) -> RunResultProtocol:  # noqa: B008
         with self.scope as runner:
             return runner.run(command, token=token)
+
+    def chain(self, *commands: str, token: AbstractToken = DefaultToken()) -> List[RunResultProtocol]:
+        with self.scope as runner:
+            return runner.chain(*commands, token=token)
 
     @abstractmethod
     def get(self, state: bytes) -> AbstractIsolate:

@@ -33,7 +33,7 @@ class AbstractIsolate(ABC):
                 results.append(
                     SimpleRunResult(
                         success=False,
-                    )
+                    ),
                 )
 
         return results

@@ -1,5 +1,5 @@
-from typing import Optional, Protocol
 from dataclasses import dataclass
+from typing import Optional, Protocol
 
 
 class RunResultProtocol(Protocol):

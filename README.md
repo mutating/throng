@@ -246,3 +246,26 @@ Although we’ve already shown above how to obtain a manager and how to use it, 
 
 - Query individual isolate objects and work with them — let’s call this the "open" method.
 - Passing commands directly to the manager without retrieving the isolates for them — let’s call this the "closed" method, since the isolates remain hidden from you.
+
+Let's get a manager object for further demonstrations:
+
+```python
+from throng import throng
+
+managers = throng('.')
+manager = managers['local']
+```
+
+Here's what the open option looks like:
+
+```python
+state = manager.read()
+isolate = manager.get(state)
+isolate.run('ls')
+```
+
+And here's the closed one:
+
+```python
+manager.run('ls')
+```

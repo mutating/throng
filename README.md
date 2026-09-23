@@ -235,3 +235,9 @@ With some “expensive” isolates, it may be important to you that they do not 
 
 
 ## Managers
+
+The primary task of managers is to create isolates and, in some cases, to manage their subsequent lifecycle. By regulating the creation of isolates, a manager effectively regulates parallelism as well. In other words, the isolate is responsible for isolation, and the manager is responsible for parallelism.
+
+How does this work? For example, a manager might maintain a pool of executables behind the scenes, and a new isolate will be created only when space becomes available in that pool. When your code requests a new isolate, the manager may “hang” until the necessary resources become available. The manager may also maintain a mutex or semaphore internally to limit local concurrency. In some cases, it may take into account feedback signals from the execution system and adjust its resource requests accordingly. All these details are internal aspects of the manager’s implementation, and that’s where the magic lies: you simply request an isolate from the manager and wait, and it handles everything else.
+
+Unfortunately, execution abstraction comes at a cost. For you as a user, the main drawback of Throng may be the unpredictability of wait times for basic operations in your software, since you can’t tell for sure whether a command is executed immediately via a local subprocess or is sent to a data center on the other side of the globe.

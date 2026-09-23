@@ -38,10 +38,10 @@ As an example, let's try creating a file in a directory and verify that it was c
 ```python
 >>> from throng import throng
 >>>
->>> with throng('.')['temporary_directory'].scope as scope:
-...     scope.run('ls')
-...     scope.run('touch file.txt')
-...     scope.run('ls')
+>>> with throng('.')['temporary_directory'].scope as isolate:
+...     isolate.run('ls')
+...     isolate.run('touch file.txt')
+...     isolate.run('ls')
 ...
 SubprocessResult(id='fc1b660ab68211f196d7f6817fdcabf4', stdout='LICENSE\nREADME.md\ndocs\npyproject.toml\nrequirements_dev.txt\ntests\nthrong\nvenv\n', stderr='', returncode=0, killed_by_token=False)
 SubprocessResult(id='fc1ca4f2b68211f196d7f6817fdcabf4', stdout='', stderr='', returncode=0, killed_by_token=False)
@@ -50,7 +50,7 @@ SubprocessResult(id='fc1d7602b68211f196d7f6817fdcabf4', stdout='LICENSE\nREADME.
 
 Let’s understand this code:
 
-- The `with ... scope` construct creates an environment for executing commands, while ensuring that this environment is cleaned up or destroyed as needed after exiting the code block.
+- The `with ... isolate` construct creates an environment for executing commands, while ensuring that this environment is cleaned up or destroyed as needed after exiting the code block.
 - `scope.run()` executes the commands in the created temporary environment.
 - Where exactly will the commands be executed? In this case, it’s determined by the `'temporary_directory'` string, which is actually the name of a built-in plugin. If needed, it can be replaced with the name of any other command-execution plugin you can connect, and your main code will work with it as if nothing had changed. This particular plugin creates a temporary directory on your computer, copies all files from the current directory into it, and deletes the entire directory once it’s finished.
 - `'.'` means that the state of the current directory is transferred to the execution environment. You can use a different directory.
@@ -144,11 +144,11 @@ It may be necessary to destroy isolates to conserve resources if those resources
 However, determining the lifecycle of isolates “manually” can be too tedious, so you might find it more convenient to use a context manager for this:
 
 ```python
-with manager.scope as scope:
-    scope.run('touch x.txt')
-    scope.run('touch y.txt')
-    scope.run('touch z.txt')
-    print(scope.run('ls').stdout)
+with manager.scope as isolate:
+    isolate.run('touch x.txt')
+    isolate.run('touch y.txt')
+    isolate.run('touch z.txt')
+    print(isolate.run('ls').stdout)
 #> LICENSE
 #> README.md
 #> docs
@@ -223,6 +223,19 @@ print(isolate.run('python -c "import time; time.sleep(1000)"', token=TimeoutToke
 
 Cancelling a token does not guarantee that the team in the isolate will stop working early; it simply requests that they do so. Whether or not to respond to such a request is the plugin’s responsibility. Do not base your code on the expectation that isolates will always read the token’s status.
 
+If you need to execute not just one command but a whole series of them, it is recommended that you use the `chain()` method:
+
+```python
+print(
+    isolate.chain(
+        'touch x.txt',
+        'touch y.txt',
+        'touch z.txt',
+    )
+)
+#> [SubprocessResult(id='4f0e1a3eb75411f18829f6817fdcabf4', stdout='', stderr='', returncode=0, killed_by_token=False), SubprocessResult(id='4f10c432b75411f18829f6817fdcabf4', stdout='', stderr='', returncode=0, killed_by_token=False), SubprocessResult(id='4f115172b75411f18829f6817fdcabf4', stdout='', stderr='', returncode=0, killed_by_token=False)]
+```
+
 When you no longer need a particular isolate, call its `kill()` method:
 
 ```python
@@ -231,7 +244,7 @@ isolate.kill()
 
 Do not attempt to call a command in an isolate that has been destroyed — this may cause an exception. The execution time of the method when it is called is not guaranteed—there may be a network call or some other resource-intensive operation happening behind the scenes. However, plugin authors are advised to make this operation fast.
 
-With some “expensive” isolates, it may be important to you that they do not remain in a suspended state if, for example, your code “forgot” to destroy the isolate, or if it terminated abnormally without having had time to release resources. `throng` does not provide such guarantees, as they depend on the specific infrastructure used to run the commands. Check the documentation for the specific plugin to see if this kind of problem could arise in its infrastructure and how it is recommended to resolve it.
+With some "expensive" isolates, it may be important to you that they do not remain in a suspended state if, for example, your code "forgot" to destroy the isolate, or if it terminated abnormally without having had time to release resources. `throng` does not provide such guarantees, as they depend on the specific infrastructure used to run the commands. Check the documentation for the specific plugin to see if this kind of problem could arise in its infrastructure and how it is recommended to resolve it.
 
 
 ## Managers

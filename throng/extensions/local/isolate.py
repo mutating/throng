@@ -3,6 +3,7 @@ from locklib import ContextLockProtocol
 from suby import SubprocessResult, run
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
+from throng.errors import CannotInstallDependencyError
 
 
 class LocalIsolate(AbstractIsolate):
@@ -18,3 +19,9 @@ class LocalIsolate(AbstractIsolate):
 
     def kill(self) -> None:
         pass
+
+    def install(self, *packages: str) -> None:
+        for package in packages:
+            install_result = self.run(f'pip install {package}')
+            if not install_result.success:
+                raise CannotInstallDependencyError

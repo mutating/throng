@@ -22,6 +22,10 @@ class AbstractIsolate(ABC):
     def kill(self) -> None:
         ...
 
+    @abstractmethod
+    def install(self, *packages: str) -> None:
+        ...
+
     def chain(self, *commands: str, token: AbstractToken = DefaultToken()) -> List[RunResultProtocol]:  # noqa: B008
         results = []
 

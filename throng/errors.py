@@ -3,3 +3,6 @@ class CannotCancelNonExistingIsolateError(RuntimeError):
 
 class NotSupportedCommandError(RuntimeError):
     ...
+
+class CannotInstallDependencyError(RuntimeError):
+    ...

@@ -8,6 +8,7 @@ from cantok import AbstractToken, DefaultToken
 from suby import SubprocessResult, run
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
+from throng.errors import CannotInstallDependencyError
 from throng.extensions.temporary_directory.errors import DirectoryDoesNotExistError
 from throng.extensions.temporary_directory.read import read_directory
 
@@ -45,3 +46,9 @@ class TemporaryDirectoryIsolate(AbstractIsolate):
                 raise DirectoryDoesNotExistError('You cannot kill again a destroyed isolate.')
             self.directory.cleanup()
             self.used = True
+
+    def install(self, *packages: str) -> None:
+        for package in packages:
+            install_result = self.run(f'pip install {package}')
+            if not install_result.success:
+                raise CannotInstallDependencyError

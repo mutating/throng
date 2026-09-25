@@ -3,6 +3,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
+from typing import List, Optional
 
 from cantok import AbstractToken, DefaultToken
 from suby import SubprocessResult, run
@@ -14,7 +15,7 @@ from throng.extensions.temporary_directory.read import read_directory
 
 
 class TemporaryDirectoryIsolate(AbstractIsolate):
-    def __init__(self, state: bytes) -> None:
+    def __init__(self, state: bytes, exclude: Optional[List[str]]) -> None:
         self.lock = Lock()
         self.used = False
         self.directory = TemporaryDirectory()
@@ -31,7 +32,7 @@ class TemporaryDirectoryIsolate(AbstractIsolate):
         with self.lock:
             if self.used:
                 raise DirectoryDoesNotExistError('You cannot re-read the state of a destroyed isolate.')
-            return read_directory(self.path)
+            return read_directory(self.path, self.exclude)
 
     def set_state(self, state: bytes) -> None:
         with self.lock:
@@ -42,8 +43,6 @@ class TemporaryDirectoryIsolate(AbstractIsolate):
 
     def kill(self) -> None:
         with self.lock:
-            if self.used:
-                raise DirectoryDoesNotExistError('You cannot kill again a destroyed isolate.')
             self.directory.cleanup()
             self.used = True
 

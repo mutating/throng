@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from throng import throng
 from throng.extensions.local.manager import LocalManager
@@ -7,10 +7,10 @@ from throng.extensions.temporary_directory.manager import TemporaryDirectoryMana
 
 
 @throng.plugin(unique=True)
-def local(path: Optional[Union[str, Path]]) -> LocalManager:
-    return LocalManager(path)
+def local(path: Union[str, Path] = '.', exclude: Optional[List[str]] = None) -> LocalManager:
+    return LocalManager(path, exclude)
 
 
 @throng.plugin(unique=True)
-def temporary_directory(path: Optional[Union[str, Path]]) -> TemporaryDirectoryManager:
-    return TemporaryDirectoryManager(path)
+def temporary_directory(path: Union[str, Path] = '.', exclude: Optional[List[str]] = None) -> TemporaryDirectoryManager:
+    return TemporaryDirectoryManager(path, exclude)

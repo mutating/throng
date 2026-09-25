@@ -1,6 +1,6 @@
 ![throng logo](https://raw.githubusercontent.com/mutating/throng/develop/docs/assets/logo_1.svg)
 
-`throng` provides a common API for running commands in different environments, from a local directory to cloud infrastructure. Plugins handle the details of each environment, so your application can switch between them without changing how it submits commands or reads results. You can use the built-in plugins, install third-party plugins, or write your own.
+`throng` provides a common API for running commands in different environments, from a local directory to cloud infrastructure. Plugins handle the details of each environment, so your application can switch between them without changing how it submits commands or reads results. You can use the built-in plugins or install third-party ones.
 
 This library provides:
 

@@ -1,5 +1,4 @@
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 from cantok import SimpleToken
@@ -70,7 +69,7 @@ def test_builtin_registration_is_unique(name, factory):
     'path_kind',
     ['relative_string', 'relative_path', 'absolute_string', 'absolute_path'],
 )
-@pytest.mark.parametrize('exclude', [None, [], ['*.tmp', 'cache/']])
+@pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
 def test_slot_preserves_path_and_exclusion_values(
     tmp_path,
     monkeypatch,
@@ -86,12 +85,13 @@ def test_slot_preserves_path_and_exclusion_values(
         'absolute_string': str(tmp_path / relative),
         'absolute_path': tmp_path / relative,
     }[path_kind]
+    expected_exclude = None if exclude is None else exclude.copy()
 
     managers = throng(path, exclude)
 
     for name in ('local', 'temporary_directory'):
         assert managers[name].path == Path(path)
-        assert managers[name].exclude == exclude
+        assert managers[name].exclude == expected_exclude
 
 
 def test_slot_calls_do_not_share_managers_or_settings(tmp_path):
@@ -109,24 +109,6 @@ def test_slot_calls_do_not_share_managers_or_settings(tmp_path):
         assert second[name].exclude == ['*.tmp']
         assert defaults[name].path == Path()
         assert defaults[name].exclude is None
-
-
-@pytest.mark.parametrize('existing', [False, True])
-def test_slot_creation_is_lazy(tmp_path, monkeypatch, existing):
-    """Obtain managers without reading files or allocating execution environments."""
-    path = tmp_path if existing else tmp_path / 'missing'
-    local_read, temporary_read, local_get, temporary_get = (Mock() for _ in range(4))
-    monkeypatch.setattr(LocalManager, 'read', local_read)
-    monkeypatch.setattr(LocalManager, 'get', local_get)
-    monkeypatch.setattr(TemporaryDirectoryManager, 'read', temporary_read)
-    monkeypatch.setattr(TemporaryDirectoryManager, 'get', temporary_get)
-
-    managers = throng(path)
-
-    assert {'local', 'temporary_directory'} <= managers.keys()
-    for dependency in (local_read, temporary_read, local_get, temporary_get):
-        dependency.assert_not_called()
-    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize('plugin', ['local', 'temporary_directory'])

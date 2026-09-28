@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from shutil import rmtree
 from unittest.mock import Mock
 
 import pytest
@@ -6,9 +7,10 @@ import pytest
 from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
 
 
-@pytest.mark.parametrize('exclude', [None, [], ['*.tmp', 'cache/']])
+@pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
 def test_read_delegates_source_settings(tmp_path, monkeypatch, exclude):
     """Read the configured source directory with the manager's exclusions."""
+    expected_exclude = None if exclude is None else exclude.copy()
     manager = TemporaryDirectoryManager(tmp_path, exclude)
     read = Mock(return_value=b'\x00\xffstate')
     monkeypatch.setattr(
@@ -17,11 +19,11 @@ def test_read_delegates_source_settings(tmp_path, monkeypatch, exclude):
     )
 
     assert manager.read() is read.return_value
-    read.assert_called_once_with(tmp_path, exclude)
+    read.assert_called_once_with(tmp_path, expected_exclude)
 
 
 @pytest.mark.parametrize('state', [b'', b'state', b'\x00\xff'])
-@pytest.mark.parametrize('exclude', [None, [], ['*.tmp']])
+@pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
 def test_get_delegates_snapshot_without_reading_source(
     tmp_path,
     monkeypatch,
@@ -29,17 +31,23 @@ def test_get_delegates_snapshot_without_reading_source(
     exclude,
 ):
     """Restore the supplied opaque snapshot without rereading the source directory."""
+    expected_exclude = None if exclude is None else exclude.copy()
     manager = TemporaryDirectoryManager(tmp_path, exclude)
-    constructor, read = Mock(), Mock()
+    constructor, read, read_source = Mock(), Mock(), Mock()
     monkeypatch.setattr(
         'throng.extensions.temporary_directory.manager.TemporaryDirectoryIsolate',
         constructor,
     )
     monkeypatch.setattr(manager, 'read', read)
+    monkeypatch.setattr(
+        'throng.extensions.temporary_directory.manager.read_directory',
+        read_source,
+    )
 
     assert manager.get(state) is constructor.return_value
-    constructor.assert_called_once_with(state, exclude)
+    constructor.assert_called_once_with(state, expected_exclude)
     read.assert_not_called()
+    read_source.assert_not_called()
 
 
 @pytest.mark.parametrize('operation', ['read', 'get'])
@@ -80,30 +88,41 @@ def test_same_snapshot_produces_independent_isolates(tmp_path, populated):
             else:
                 assert not (second.path / 'file').exists()
             first.kill()
+            assert not first.lock.locked()
             assert second.path.is_dir()
             assert tmp_path.is_dir()
         finally:
-            second.kill()
+            second.directory.cleanup()
+            if second.lock.locked():
+                second.lock.release()
     finally:
-        first.kill()
+        first.directory.cleanup()
+        if first.lock.locked():
+            first.lock.release()
 
 
-@pytest.mark.parametrize('change', ['modify', 'delete'])
+@pytest.mark.parametrize('change', ['modify_file', 'delete_file', 'delete_directory'])
 def test_snapshot_survives_source_changes(tmp_path, change):
-    """Restore saved contents even after the source file changes or disappears."""
-    source = tmp_path / 'file'
+    """Restore saved contents even after the source file or whole directory disappears."""
+    directory = tmp_path / 'source'
+    directory.mkdir()
+    source = directory / 'file'
     source.write_bytes(b'saved')
-    manager = TemporaryDirectoryManager(tmp_path)
+    manager = TemporaryDirectoryManager(directory)
     state = manager.read()
-    if change == 'modify':
+    if change == 'modify_file':
         source.write_bytes(b'new')
-    else:
+    elif change == 'delete_file':
         source.unlink()
+    else:
+        rmtree(directory)
     isolate = manager.get(state)
     try:
         assert (isolate.path / 'file').read_bytes() == b'saved'
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize('fail_body', [False, True])

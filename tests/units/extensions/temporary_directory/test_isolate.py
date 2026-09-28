@@ -5,7 +5,7 @@ from io import BytesIO
 from pathlib import Path
 from shutil import rmtree
 from threading import Event
-from unittest.mock import MagicMock, Mock, call
+from unittest.mock import DEFAULT, MagicMock, Mock, call
 
 import pytest
 from cantok import DefaultToken, SimpleToken
@@ -21,9 +21,10 @@ from throng.extensions.temporary_directory.read import read_directory
     'files',
     [(), (('file', b''),), (('nested/файл', b'\x00\xff'), ('with spaces', b'text'))],
 )
-@pytest.mark.parametrize('exclude', [None, [], ['*.tmp']])
+@pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
 def test_constructor_restores_snapshot(files, exclude):
     """Create a live temporary directory containing exactly the supplied files."""
+    expected_exclude = None if exclude is None else exclude.copy()
     buffer = BytesIO()
     with tarfile.open(fileobj=buffer, mode='w') as archive:
         for name, data in files:
@@ -37,14 +38,17 @@ def test_constructor_restores_snapshot(files, exclude):
         assert isolate.path == Path(isolate.directory.name)
         assert isolate.path.is_dir()
         assert isolate.used is False
-        assert isolate.exclude == exclude
+        assert not isolate.lock.locked()
+        assert isolate.exclude == expected_exclude
         assert {
             path.relative_to(isolate.path).as_posix(): path.read_bytes()
             for path in isolate.path.rglob('*')
             if path.is_file()
         } == dict(files)
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize(
@@ -65,7 +69,9 @@ def test_constructor_accepts_supported_tar_formats(mode, module):
     try:
         assert (isolate.path / 'file').read_bytes() == b'data'
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize('change', ['add', 'replace', 'nested'])
@@ -84,12 +90,15 @@ def test_set_state_updates_live_files(tmp_path, change):
         assert (isolate.path / name).read_bytes() == b'changed'
         assert (tmp_path / 'file').read_bytes() == b'original'
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
-@pytest.mark.parametrize('exclude', [None, [], ['*.tmp']])
+@pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
 def test_read_uses_own_directory_and_exclusions(tmp_path, monkeypatch, exclude):
     """Read the isolate directory with its exclusions and preserve the snapshot bytes."""
+    expected_exclude = None if exclude is None else exclude.copy()
     isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), exclude)
     read = Mock(return_value=b'\x00\xffsnapshot')
     monkeypatch.setattr(
@@ -98,9 +107,11 @@ def test_read_uses_own_directory_and_exclusions(tmp_path, monkeypatch, exclude):
     )
     try:
         assert isolate.read() is read.return_value
-        read.assert_called_once_with(isolate.path, exclude)
+        read.assert_called_once_with(isolate.path, expected_exclude)
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize('change', ['add', 'modify', 'delete'])
@@ -116,6 +127,7 @@ def test_read_captures_changes_for_an_independent_isolate(tmp_path, change):
         else:
             (first.path / 'file').unlink()
         state = first.read()
+        assert not first.lock.locked()
         expected = {
             'add': {'file': b'old', 'new': b'new'},
             'modify': {'file': b'new'},
@@ -138,9 +150,13 @@ def test_read_captures_changes_for_an_independent_isolate(tmp_path, change):
             } == expected
             assert (tmp_path / 'file').read_bytes() == b'old'
         finally:
-            second.kill()
+            second.directory.cleanup()
+            if second.lock.locked():
+                second.lock.release()
     finally:
-        first.kill()
+        first.directory.cleanup()
+        if first.lock.locked():
+            first.lock.release()
 
 
 @pytest.mark.parametrize('created_later', [False, True])
@@ -158,7 +174,9 @@ def test_read_excludes_existing_and_new_files(tmp_path, created_later):
             assert archive.getnames() == ['keep']
             assert archive.extractfile('keep').read() == b'keep'
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize(
@@ -176,7 +194,9 @@ def test_invalid_state_releases_lock(tmp_path, state):
         assert isolate.used is False
         isolate.set_state(valid_state)
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize('error_type', [OSError, PermissionError])
@@ -206,7 +226,9 @@ def test_extraction_error_closes_archive(tmp_path, monkeypatch, error_type):
             assert context.__exit__.call_args.args[1] is error
             assert not isolate.lock.locked()
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize(
@@ -239,25 +261,45 @@ def test_run_forwards_command_and_token(tmp_path, monkeypatch, command, token_ki
         )
         assert result is run.return_value
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize(
-    ('success', 'code', 'killed'),
-    [(True, 0, False), (False, 1, False), (False, None, False), (False, -9, True)],
+    'outcome',
+    [
+        (True, 0, '\n世界\n', ' warning\n', False),
+        (False, 1, '', 'error', False),
+        (False, None, None, None, False),
+        (False, -9, 'partial', '', True),
+        (False, 0, '', '', True),
+        (True, 1, 'output', 'diagnostic', False),
+    ],
 )
-def test_run_preserves_plugin_result(tmp_path, monkeypatch, success, code, killed):
+def test_run_preserves_plugin_result(tmp_path, monkeypatch, outcome):
     """Preserve unsuccessful and cancelled results, including plugin-specific fields."""
     isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
-    expected = Mock(success=success, returncode=code, killed_by_token=killed)
+    success, code, stdout, stderr, killed = outcome
+    fields = {
+        'success': success,
+        'returncode': code,
+        'stdout': stdout,
+        'stderr': stderr,
+        'killed_by_token': killed,
+    }
+    expected = Mock(**fields)
     monkeypatch.setattr(
         'throng.extensions.temporary_directory.isolate.run',
         Mock(return_value=expected),
     )
     try:
         assert isolate.run('command') is expected
+        assert {name: getattr(expected, name) for name in fields} == fields
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize('error_type', [RuntimeError, OSError, KeyboardInterrupt])
@@ -276,17 +318,29 @@ def test_execution_error_allows_retry(tmp_path, monkeypatch, error_type):
         assert isolate.used is False
         assert isolate.run('retry') is expected
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize(
     'packages',
     [(), ('package',), ('one', 'two', 'one'), ('pkg==1.2', 'pkg[extra]')],
 )
-def test_install_preserves_package_order(tmp_path, monkeypatch, packages):
-    """Install requested packages sequentially and skip an empty request."""
+@pytest.mark.parametrize(
+    ('returncode', 'stderr'),
+    [(None, None), (0, ''), (0, 'installer warning'), (1, ''), (-9, '')],
+)
+def test_install_preserves_package_order(
+    tmp_path,
+    monkeypatch,
+    packages,
+    returncode,
+    stderr,
+):
+    """Install in order, trusting success regardless of the exit code or diagnostics."""
     isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
-    run = Mock(return_value=SimpleRunResult(True))
+    run = Mock(return_value=SimpleRunResult(True, returncode, 'installed', stderr))
     monkeypatch.setattr(isolate, 'run', run)
     try:
         assert isolate.install(*packages) is None
@@ -294,7 +348,9 @@ def test_install_preserves_package_order(tmp_path, monkeypatch, packages):
             call(f'pip install {package}') for package in packages
         ]
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize('position', [0, 1, 2])
@@ -320,7 +376,9 @@ def test_install_stops_at_unsuccessful_result(
             call(f'pip install {package}') for package in packages[: position + 1]
         ]
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize('position', [0, 1, 2])
@@ -342,7 +400,9 @@ def test_install_preserves_execution_exception(
         assert caught.value is error
         assert run.call_count == position + 1
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize('tree', ['empty', 'populated', 'already_removed'])
@@ -363,86 +423,131 @@ def test_kill_removes_only_own_directory(tmp_path, tree, repetitions):
                 rmtree(first.path)
             for _ in range(repetitions):
                 assert first.kill() is None
+                assert not first.lock.locked()
             first.__del__()
             assert first.used is True
             assert not first.path.exists()
             assert (second.path / 'source').read_bytes() == b'keep'
             assert (tmp_path / 'source').read_bytes() == b'keep'
         finally:
-            second.kill()
+            second.directory.cleanup()
+            if second.lock.locked():
+                second.lock.release()
     finally:
-        first.kill()
+        first.directory.cleanup()
+        if first.lock.locked():
+            first.lock.release()
 
 
 @pytest.mark.parametrize(
-    ('operation', 'arguments', 'message'),
+    ('operation', 'argument_kind', 'message'),
     [
-        ('run', ('command',), 'reuse'),
-        ('read', (), 're-read'),
-        ('set_state', (b'invalid',), 'reuse'),
-        ('install', ('one', 'two'), 'reuse'),
+        ('run', 'command', 'reuse'),
+        ('read', 'none', 're-read'),
+        ('set_state', 'invalid_state', 'reuse'),
+        ('set_state', 'valid_state', 'reuse'),
+        ('install', 'one_package', 'reuse'),
+        ('install', 'several_packages', 'reuse'),
     ],
 )
 def test_destroyed_isolate_rejects_work_before_external_calls(
     tmp_path,
     monkeypatch,
     operation,
-    arguments,
+    argument_kind,
     message,
 ):
     """Reject destroyed isolates before running, reading, restoring or installing."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
-    isolate.kill()
-    run, read, open_archive = Mock(), Mock(), Mock()
-    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', run)
-    monkeypatch.setattr(
-        'throng.extensions.temporary_directory.isolate.read_directory',
-        read,
-    )
-    monkeypatch.setattr(
-        'throng.extensions.temporary_directory.isolate.tarfile.open',
-        open_archive,
-    )
+    state = read_directory(tmp_path, None)
+    arguments = {
+        'command': ('command',),
+        'none': (),
+        'invalid_state': (b'invalid',),
+        'valid_state': (state,),
+        'one_package': ('one',),
+        'several_packages': ('one', 'two'),
+    }[argument_kind]
+    isolate = TemporaryDirectoryIsolate(state, None)
+    try:
+        isolate.kill()
+        assert not isolate.lock.locked()
+        run, read, open_archive = Mock(), Mock(), Mock()
+        monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', run)
+        monkeypatch.setattr(
+            'throng.extensions.temporary_directory.isolate.read_directory',
+            read,
+        )
+        monkeypatch.setattr(
+            'throng.extensions.temporary_directory.isolate.tarfile.open',
+            open_archive,
+        )
 
-    with pytest.raises(DirectoryDoesNotExistError, match=message):
-        getattr(isolate, operation)(*arguments)
+        with pytest.raises(DirectoryDoesNotExistError, match=message):
+            getattr(isolate, operation)(*arguments)
 
-    run.assert_not_called()
-    read.assert_not_called()
-    open_archive.assert_not_called()
-    assert not isolate.path.exists()
-    assert not isolate.lock.locked()
+        run.assert_not_called()
+        read.assert_not_called()
+        open_archive.assert_not_called()
+        assert not isolate.path.exists()
+        assert not isolate.lock.locked()
+    finally:
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 def test_cleanup_can_be_retried_after_failure(tmp_path, monkeypatch):
     """Report cleanup failure without retaining the lock or preventing a retry."""
     isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
     cleanup = isolate.directory.cleanup
+    error = OSError('cleanup failed')
+    attempts = Mock(wraps=cleanup, side_effect=[error, DEFAULT])
     try:
         with monkeypatch.context() as patcher:
-            patcher.setattr(
-                isolate.directory,
-                'cleanup',
-                Mock(side_effect=OSError('cleanup failed')),
-            )
-            with pytest.raises(OSError, match='cleanup failed'):
+            patcher.setattr(isolate.directory, 'cleanup', attempts)
+            with pytest.raises(OSError, match='cleanup failed') as caught:
                 isolate.kill()
+            assert caught.value is error
+            attempts.assert_called_once_with()
             assert not isolate.lock.locked()
             assert isolate.path.is_dir()
-        isolate.kill()
+            isolate.kill()
+            assert attempts.call_args_list == [call(), call()]
         assert not isolate.path.exists()
         assert isolate.used is True
     finally:
         cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
 @pytest.mark.parametrize('operation', ['run', 'read', 'set_state', 'kill'])
 @pytest.mark.parametrize('fail', [False, True])
 def test_operations_hold_and_release_lock(tmp_path, monkeypatch, operation, fail):
-    """Protect each directory operation and release the lock on success or failure."""
+    """Protect each directory operation and release the lock on success or failure.
+
+    Successful cleanup must mark the isolate destroyed before another worker enters.
+    Cleanup bypasses kill and releases leaked locks so a failed assertion cannot hang.
+    """
     state = read_directory(tmp_path, None)
     isolate = TemporaryDirectoryIsolate(state, None)
     error = OSError('operation failed')
+    lock = isolate.lock
+    observed_lock = MagicMock(wraps=lock)
+
+    def acquire():
+        assert lock.acquire(timeout=5), 'The isolate lock was not released.'
+
+    def release(*_args):
+        try:
+            if operation == 'kill' and not fail:
+                assert isolate.used is True
+        finally:
+            lock.release()
+
+    observed_lock.__enter__.side_effect = acquire
+    observed_lock.__exit__.side_effect = release
+    monkeypatch.setattr(isolate, 'lock', observed_lock)
 
     def dependency(*_args, **_kwargs):
         assert isolate.lock.locked()
@@ -451,17 +556,17 @@ def test_operations_hold_and_release_lock(tmp_path, monkeypatch, operation, fail
         return b'state' if operation == 'read' else SimpleRunResult(True)
 
     try:
+        assert not isolate.lock.locked()
         with monkeypatch.context() as patcher:
-            if operation in ('run', 'read'):
-                name = 'run' if operation == 'run' else 'read_directory'
-                patcher.setattr(
-                    f'throng.extensions.temporary_directory.isolate.{name}',
-                    dependency,
-                )
-            elif operation == 'set_state':
-                patcher.setattr(tarfile.TarFile, 'extractall', dependency)
-            else:
+            if operation == 'kill':
                 patcher.setattr(isolate.directory, 'cleanup', dependency)
+            else:
+                target = {
+                    'run': 'throng.extensions.temporary_directory.isolate.run',
+                    'read': 'throng.extensions.temporary_directory.isolate.read_directory',
+                    'set_state': 'tarfile.TarFile.extractall',
+                }[operation]
+                patcher.setattr(target, dependency)
             arguments = {
                 'run': ('command',),
                 'read': (),
@@ -479,78 +584,116 @@ def test_operations_hold_and_release_lock(tmp_path, monkeypatch, operation, fail
                 assert caught.value is error
             assert not isolate.lock.locked()
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if isolate.lock.locked():
+            isolate.lock.release()
 
 
-def test_isolates_have_independent_locks(tmp_path):
-    """Keep operations on separate temporary isolates independently lockable."""
+@pytest.mark.parametrize('same_state', [False, True])
+def test_isolates_have_independent_locks(tmp_path, same_state):
+    """Keep separate isolates independently lockable regardless of snapshot contents."""
     state = read_directory(tmp_path, None)
     first = TemporaryDirectoryIsolate(state, None)
     try:
+        if not same_state:
+            (tmp_path / 'new').write_bytes(b'different snapshot')
+            state = read_directory(tmp_path, None)
         second = TemporaryDirectoryIsolate(state, None)
         try:
             assert first.lock is not second.lock
+            assert not first.lock.locked()
+            assert not second.lock.locked()
             with first.lock:
                 assert not second.lock.locked()
         finally:
-            second.kill()
+            second.directory.cleanup()
+            if second.lock.locked():
+                second.lock.release()
     finally:
-        first.kill()
+        first.directory.cleanup()
+        if first.lock.locked():
+            first.lock.release()
 
 
 @pytest.mark.parametrize('operation', ['run', 'read', 'set_state'])
-def test_kill_waits_for_current_operation(tmp_path, monkeypatch, operation):
-    """Keep the directory alive until an in-progress protected operation finishes.
+@pytest.mark.parametrize('kill_first', [False, True])
+def test_operations_and_kill_share_lock(tmp_path, monkeypatch, operation, kill_first):
+    """Serialize work and cleanup, rejecting operations queued behind kill.
 
-    An observed lock confirms cleanup has attempted entry before it is released.
+    Events confirm the second operation attempts entry while the first holds the lock.
+    Acquisition times out so a leaked lock fails instead of blocking pool shutdown.
+    Final cleanup bypasses tested methods and releases any leaked lock after workers stop.
     """
     state = read_directory(tmp_path, None)
     isolate = TemporaryDirectoryIsolate(state, None)
-    lock = isolate.lock
-    entered, kill_attempted, release = (Event() for _ in range(3))
+    lock, cleanup = isolate.lock, isolate.directory.cleanup
+    entered, second_attempted, release = (Event() for _ in range(3))
     observed_lock = MagicMock()
 
     def acquire():
         if entered.is_set():
-            kill_attempted.set()
-        lock.acquire()
+            second_attempted.set()
+        assert lock.acquire(timeout=5), 'The isolate lock was not released.'
 
     observed_lock.__enter__.side_effect = acquire
     observed_lock.__exit__.side_effect = lambda *_args: lock.release()
     monkeypatch.setattr(isolate, 'lock', observed_lock)
 
-    def dependency(*_args, **_kwargs):
+    dependency = Mock(
+        return_value=b'state' if operation == 'read' else SimpleRunResult(True),
+    )
+
+    def hold_first(*_args, **_kwargs):
         entered.set()
         assert release.wait(5)
         assert isolate.path.is_dir()
-        return b'state' if operation == 'read' else SimpleRunResult(True)
+        return cleanup() if kill_first else dependency.return_value
 
     try:
         with monkeypatch.context() as patcher:
-            if operation == 'set_state':
-                patcher.setattr(tarfile.TarFile, 'extractall', dependency)
+            if kill_first:
+                patcher.setattr(isolate.directory, 'cleanup', hold_first)
             else:
-                name = 'run' if operation == 'run' else 'read_directory'
-                patcher.setattr(
-                    f'throng.extensions.temporary_directory.isolate.{name}',
-                    dependency,
-                )
+                dependency.side_effect = hold_first
+            target = {
+                'run': 'throng.extensions.temporary_directory.isolate.run',
+                'read': 'throng.extensions.temporary_directory.isolate.read_directory',
+                'set_state': 'tarfile.TarFile.extractall',
+            }[operation]
+            patcher.setattr(target, dependency)
             arguments = {'run': ('command',), 'read': (), 'set_state': (state,)}[
                 operation
             ]
             with ThreadPoolExecutor(max_workers=2) as pool:
-                work = pool.submit(getattr(isolate, operation), *arguments)
+                work = getattr(isolate, operation)
+                first = (
+                    pool.submit(isolate.kill)
+                    if kill_first
+                    else pool.submit(work, *arguments)
+                )
                 try:
                     assert entered.wait(5)
-                    cleanup = pool.submit(isolate.kill)
-                    assert kill_attempted.wait(5)
-                    assert not cleanup.done()
-                    assert isolate.path.is_dir()
+                    second = (
+                        pool.submit(work, *arguments)
+                        if kill_first
+                        else pool.submit(isolate.kill)
+                    )
+                    assert second_attempted.wait(5)
+                    assert not second.done()
                 finally:
                     release.set()
-                work.result(timeout=5)
-                cleanup.result(timeout=5)
+                first.result(timeout=5)
+                with (
+                    pytest.raises(DirectoryDoesNotExistError)
+                    if kill_first
+                    else nullcontext()
+                ):
+                    second.result(timeout=5)
+                assert dependency.call_count == (0 if kill_first else 1)
         assert not isolate.path.exists()
         assert isolate.used is True
+        assert not lock.locked()
     finally:
-        isolate.kill()
+        isolate.directory.cleanup()
+        if lock.locked():
+            lock.release()

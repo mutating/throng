@@ -172,7 +172,15 @@ def test_snapshots_are_independent_of_later_changes(tmp_path, change):
 
 @pytest.mark.parametrize(
     'stage',
-    ['crawler', 'open', 'iterate', 'first_file', 'second_file'],
+    [
+        'crawler',
+        'open',
+        'iterate',
+        'first_next',
+        'second_next',
+        'first_file',
+        'second_file',
+    ],
 )
 @pytest.mark.parametrize('error_type', [FileNotFoundError, PermissionError])
 def test_read_errors_propagate_and_close_open_archives(
@@ -195,6 +203,13 @@ def test_read_errors_propagate_and_close_open_archives(
         iterator = MagicMock()
         iterator.__iter__.side_effect = error
         crawler.return_value = iterator
+    elif stage in ('first_next', 'second_next'):
+        iterator = MagicMock()
+        iterator.__iter__.side_effect = lambda: iterator
+        iterator.__next__.side_effect = (
+            [tmp_path / 'one'] if stage == 'second_next' else []
+        ) + [error]
+        crawler.return_value = iterator
     else:
         archive.add.side_effect = [None] * (stage == 'second_file') + [error]
     monkeypatch.setattr('throng.extensions.temporary_directory.read.Crawler', crawler)
@@ -207,13 +222,19 @@ def test_read_errors_propagate_and_close_open_archives(
         read_directory(tmp_path, None)
 
     assert caught.value is error
-    if stage in ('iterate', 'first_file', 'second_file'):
+    if stage not in ('crawler', 'open'):
         archive_context.__exit__.assert_called_once()
         assert archive_context.__exit__.call_args.args[1] is error
     else:
         archive_context.__exit__.assert_not_called()
     if stage == 'crawler':
         open_archive.assert_not_called()
+    if stage in ('first_next', 'second_next'):
+        assert archive.add.call_args_list == (
+            [call(tmp_path / 'one', arcname=Path('one'))]
+            if stage == 'second_next'
+            else []
+        )
     if stage == 'second_file':
         assert archive.add.call_args_list == [
             call(tmp_path / 'one', arcname=Path('one')),

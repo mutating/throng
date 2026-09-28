@@ -60,20 +60,29 @@ def test_run_forwards_command_and_token(tmp_path, monkeypatch, command, token_ki
 
 
 @pytest.mark.parametrize(
-    ('success', 'code', 'killed'),
-    [(True, 0, False), (False, 1, False), (False, None, False), (False, -9, True)],
+    'outcome',
+    [
+        (True, 0, '\n世界\n', ' warning\n', False),
+        (False, 1, '', 'error', False),
+        (False, None, None, None, False),
+        (False, -9, 'partial', '', True),
+        (False, 0, '', '', True),
+        (True, 1, 'output', 'diagnostic', False),
+    ],
 )
-def test_run_preserves_result_and_holds_lock(
-    tmp_path,
-    monkeypatch,
-    success,
-    code,
-    killed,
-):
+def test_run_preserves_result_and_holds_lock(tmp_path, monkeypatch, outcome):
     """Protect execution with the lock while retaining all plugin result data."""
     lock = Lock()
     isolate = LocalIsolate(lock, tmp_path)
-    expected = Mock(success=success, returncode=code, killed_by_token=killed)
+    success, code, stdout, stderr, killed = outcome
+    fields = {
+        'success': success,
+        'returncode': code,
+        'stdout': stdout,
+        'stderr': stderr,
+        'killed_by_token': killed,
+    }
+    expected = Mock(**fields)
 
     def execute(*_args, **_kwargs):
         assert lock.locked()
@@ -82,6 +91,7 @@ def test_run_preserves_result_and_holds_lock(
     monkeypatch.setattr('throng.extensions.local.isolate.run', execute)
 
     assert isolate.run('command') is expected
+    assert {name: getattr(expected, name) for name in fields} == fields
     assert not lock.locked()
 
 
@@ -123,20 +133,28 @@ def test_lock_failure_prevents_execution(tmp_path, monkeypatch, error_type):
 
 
 @pytest.mark.parametrize('populated', [False, True])
-def test_read_returns_empty_state_without_changes(tmp_path, populated):
-    """Read local state without copying or modifying the user's files."""
-    if populated:
-        (tmp_path / 'file').write_bytes(b'original')
+def test_read_returns_empty_state_without_changes(tmp_path, monkeypatch, populated):
+    """Return empty local state without reading or modifying the user's files."""
     isolate = LocalIsolate(Lock(), tmp_path)
 
-    assert isolate.read() == b''
-    if populated:
-        assert (tmp_path / 'file').read_bytes() == b'original'
-        (tmp_path / 'file').write_bytes(b'changed')
-        assert isolate.read() == b''
-        assert (tmp_path / 'file').read_bytes() == b'changed'
-    else:
-        assert list(tmp_path.iterdir()) == []
+    for content in (b'original', b'changed'):
+        if populated:
+            (tmp_path / 'file').write_bytes(content)
+        operations = {
+            name: Mock(
+                side_effect=AssertionError(f'Local state must not read files: {name}'),
+            )
+            for name in ('builtins.open', 'io.open', 'os.scandir', 'os.listdir')
+        }
+        with monkeypatch.context() as patcher:
+            for name, operation in operations.items():
+                patcher.setattr(name, operation)
+            assert isolate.read() == b''
+        for operation in operations.values():
+            operation.assert_not_called()
+        if populated:
+            assert (tmp_path / 'file').read_bytes() == content
+    assert list(tmp_path.iterdir()) == ([tmp_path / 'file'] if populated else [])
 
 
 @pytest.mark.parametrize('repetitions', [1, 3])
@@ -162,10 +180,20 @@ def test_kill_preserves_source_files(tmp_path, repetitions, populated):
     'packages',
     [(), ('package',), ('one', 'two', 'one'), ('pkg==1.2', 'pkg[extra]')],
 )
-def test_install_preserves_package_order(tmp_path, monkeypatch, packages):
-    """Install packages sequentially, doing nothing for an empty request."""
+@pytest.mark.parametrize(
+    ('returncode', 'stderr'),
+    [(None, None), (0, ''), (0, 'installer warning'), (1, ''), (-9, '')],
+)
+def test_install_preserves_package_order(
+    tmp_path,
+    monkeypatch,
+    packages,
+    returncode,
+    stderr,
+):
+    """Install in order, trusting success regardless of the exit code or diagnostics."""
     isolate = LocalIsolate(Lock(), tmp_path)
-    run = Mock(return_value=SimpleRunResult(True))
+    run = Mock(return_value=SimpleRunResult(True, returncode, 'installed', stderr))
     monkeypatch.setattr(isolate, 'run', run)
 
     assert isolate.install(*packages) is None

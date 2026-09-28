@@ -10,7 +10,7 @@ from throng.errors import NotSupportedCommandError
 
 @pytest.mark.parametrize('token_kind', ['default', 'active', 'cancelled', 'unreadable'])
 def test_empty_chain_does_not_inspect_token(token_kind):
-    """Avoid execution and cancellation checks when no commands were supplied."""
+    """Return a fresh empty list without execution or cancellation checks."""
     isolate = Mock(spec=AbstractIsolate)
     token = MagicMock()
     token.__bool__.side_effect = AssertionError('The token must not be inspected.')
@@ -21,7 +21,13 @@ def test_empty_chain_does_not_inspect_token(token_kind):
         'unreadable': {'token': token},
     }
 
-    assert AbstractIsolate.chain(isolate, **options[token_kind]) == []
+    first = AbstractIsolate.chain(isolate, **options[token_kind])
+    second = AbstractIsolate.chain(isolate, **options[token_kind])
+
+    assert first == second == []
+    assert first is not second
+    first.append(SimpleRunResult(True))
+    assert second == []
     assert isolate.mock_calls == []
     token.__bool__.assert_not_called()
 
@@ -34,7 +40,17 @@ def test_empty_chain_does_not_inspect_token(token_kind):
 def test_chain_preserves_commands_results_and_token(commands, explicit_token):
     """Keep command order, plugin results and the same token throughout a chain."""
     isolate = Mock(spec=AbstractIsolate)
-    expected = [Mock(success=True, extra=object()) for _ in commands]
+    fields = [
+        {
+            'success': True,
+            'returncode': 0,
+            'stdout': command,
+            'stderr': ' diagnostic\n',
+            'extra': object(),
+        }
+        for command in commands
+    ]
+    expected = [Mock(**values) for values in fields]
     isolate.run.side_effect = expected
     token = SimpleToken()
 
@@ -54,10 +70,12 @@ def test_chain_preserves_commands_results_and_token(commands, explicit_token):
     ]
     assert len(results) == len(expected)
     assert all(actual is original for actual, original in zip(results, expected))
+    for result, values in zip(results, fields):
+        assert {name: getattr(result, name) for name in values} == values
 
 
 @pytest.mark.parametrize('failed_at', [0, 1, 2, 'all'])
-@pytest.mark.parametrize('returncode', [1, -9, None])
+@pytest.mark.parametrize('returncode', [0, 1, -9, None])
 def test_chain_continues_after_unsuccessful_results(failed_at, returncode):
     """Leave stopping decisions to cancellation rather than command success."""
     isolate = Mock(spec=AbstractIsolate)
@@ -71,13 +89,26 @@ def test_chain_continues_after_unsuccessful_results(failed_at, returncode):
 
     assert isolate.run.call_count == 3
     assert all(actual is original for actual, original in zip(results, expected))
+    assert [
+        (result.success, result.returncode, result.stdout, result.stderr)
+        for result in results
+    ] == [
+        (failed_at not in (index, 'all'), returncode, None, None) for index in range(3)
+    ]
 
 
-@pytest.mark.parametrize('completed', [0, 1, 2, 4])
+@pytest.mark.parametrize(
+    ('command_count', 'completed'),
+    [(1, 0), (4, 0), (4, 1), (4, 2), (4, 4)],
+)
 @pytest.mark.parametrize('success', [False, True])
-def test_chain_keeps_completed_results_when_cancelled(completed, success):
+def test_chain_keeps_completed_results_when_cancelled(
+    command_count,
+    completed,
+    success,
+):
     """Keep completed results and mark every command skipped after cancellation."""
-    commands = ('first', 'second', 'third', 'fourth')
+    commands = ('first', 'second', 'third', 'fourth')[:command_count]
     token = SimpleToken(cancelled=completed == 0)
     isolate = Mock(spec=AbstractIsolate)
     executed = []

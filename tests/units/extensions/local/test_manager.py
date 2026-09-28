@@ -11,14 +11,15 @@ from throng.extensions.local.manager import LocalManager
 
 
 @pytest.mark.parametrize('as_string', [False, True])
-@pytest.mark.parametrize('exclude', [None, [], ['*.tmp']])
+@pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
 def test_manager_keeps_source_settings(tmp_path, as_string, exclude):
     """Use shared manager initialization for paths and file exclusions."""
+    expected_exclude = None if exclude is None else exclude.copy()
     manager = LocalManager(str(tmp_path) if as_string else tmp_path, exclude)
 
     assert manager.path == tmp_path
     assert isinstance(manager.path, Path)
-    assert manager.exclude == exclude
+    assert manager.exclude == expected_exclude
     assert not manager.lock.locked()
 
 
@@ -37,12 +38,13 @@ def test_managers_have_independent_locks(tmp_path, same_path):
     'state',
     [b'', b'state', b'\x00\xff', b'not really a tar archive'],
 )
-def test_get_ignores_state_and_shares_manager_lock(tmp_path, state):
+@pytest.mark.parametrize('same_state', [False, True])
+def test_get_ignores_state_and_shares_manager_lock(tmp_path, state, same_state):
     """Create distinct isolates using the original directory and one manager lock."""
     manager = LocalManager(tmp_path, None)
 
     first = manager.get(state)
-    second = manager.get(b'different state')
+    second = manager.get(state if same_state else b'different state')
 
     assert isinstance(first, LocalIsolate)
     assert isinstance(second, LocalIsolate)
@@ -54,18 +56,38 @@ def test_get_ignores_state_and_shares_manager_lock(tmp_path, state):
 
 @pytest.mark.parametrize('exclude', [None, [], ['*']])
 @pytest.mark.parametrize('populated', [False, True])
-def test_read_does_not_snapshot_or_modify_files(tmp_path, exclude, populated):
-    """Return empty local state without reading files into a snapshot."""
+@pytest.mark.parametrize('operation', ['read', 'get'])
+def test_state_operations_do_not_snapshot_or_modify_files(
+    tmp_path,
+    monkeypatch,
+    exclude,
+    populated,
+    operation,
+):
+    """Read state and recreate local isolates without snapshotting or changing files."""
     manager = LocalManager(tmp_path, exclude)
     if populated:
         (tmp_path / 'nested').mkdir()
-        (tmp_path / 'nested' / 'file').write_bytes(b'original')
-
-    assert manager.read() == b''
-    if populated:
-        assert (tmp_path / 'nested' / 'file').read_bytes() == b'original'
-        (tmp_path / 'nested' / 'file').write_bytes(b'changed')
-    assert manager.read() == b''
+    for content in (b'original', b'changed'):
+        if populated:
+            (tmp_path / 'nested' / 'file').write_bytes(content)
+        operations = {
+            name: Mock(
+                side_effect=AssertionError(f'Local state must not read files: {name}'),
+            )
+            for name in ('builtins.open', 'io.open', 'os.scandir', 'os.listdir')
+        }
+        with monkeypatch.context() as patcher:
+            for name, spy in operations.items():
+                patcher.setattr(name, spy)
+            if operation == 'read':
+                assert manager.read() == b''
+            else:
+                assert isinstance(manager.get(b'ignored'), LocalIsolate)
+        for spy in operations.values():
+            spy.assert_not_called()
+        if populated:
+            assert (tmp_path / 'nested' / 'file').read_bytes() == content
     assert sorted(
         path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob('*')
     ) == (['nested', 'nested/file'] if populated else [])
@@ -97,6 +119,7 @@ def test_isolates_of_one_manager_serialize_commands(tmp_path, monkeypatch, fail_
     """Release the shared lock before another isolate executes, including on failure.
 
     Events confirm the second worker attempts acquisition while the first owns it.
+    Acquisition times out so a leaked lock fails instead of blocking pool shutdown.
     """
     manager = LocalManager(tmp_path, None)
     lock = manager.lock
@@ -108,7 +131,7 @@ def test_isolates_of_one_manager_serialize_commands(tmp_path, monkeypatch, fail_
     def acquire():
         if first_entered.is_set():
             second_attempted.set()
-        lock.acquire()
+        assert lock.acquire(timeout=5), 'The shared lock was not released.'
 
     observed_lock.__enter__.side_effect = acquire
     observed_lock.__exit__.side_effect = lambda *_args: lock.release()

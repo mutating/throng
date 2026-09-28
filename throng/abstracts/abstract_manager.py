@@ -54,8 +54,8 @@ class AbstractManager(ABC):
 
     @abstractmethod
     def get(self, state: bytes) -> AbstractIsolate:
-        ...
+        ...  # pragma: no cover
 
     @abstractmethod
     def read(self) -> bytes:
-        ...
+        ...  # pragma: no cover

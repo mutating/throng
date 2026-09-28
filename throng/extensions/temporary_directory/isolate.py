@@ -17,6 +17,7 @@ from throng.extensions.temporary_directory.read import read_directory
 class TemporaryDirectoryIsolate(AbstractIsolate):
     def __init__(self, state: bytes, exclude: Optional[List[str]]) -> None:
         self.lock = Lock()
+        self.exclude = exclude
         self.used = False
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "throng"
-version = "0.0.3"
+version = "0.0.4"
 authors = [
   { name="Evgeniy Blinov", email="zheni-b@yandex.ru" },
 ]
@@ -20,7 +20,6 @@ dependencies = [
     'dirstree>=0.0.12',
     'locklib>=0.0.25',
     'pathspec>=0.12.0',
-    'cython==3.2.4',
 ]
 classifiers = [
     "Operating System :: OS Independent",

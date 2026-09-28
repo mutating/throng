@@ -12,6 +12,6 @@ def read_directory(path: Path, exclude: Optional[List[str]]) -> bytes:
 
     with tarfile.open(fileobj=buffer, mode='w') as tar:
         for file in crawler:
-            tar.add(file)
+            tar.add(file, arcname=file.relative_to(path))
 
     return buffer.getvalue()

@@ -1,4 +1,21 @@
-![throng logo](https://raw.githubusercontent.com/mutating/throng/develop/docs/assets/logo_1.svg)
+<details>
+  <summary>ⓘ</summary>
+
+[![Downloads](https://static.pepy.tech/badge/throng/month)](https://pepy.tech/project/throng)
+[![Downloads](https://static.pepy.tech/badge/throng)](https://pepy.tech/project/throng)
+[![Coverage Status](https://coveralls.io/repos/github/mutating/throng/badge.svg?branch=main)](https://coveralls.io/github/mutating/throng?branch=main)
+[![Lines of code](https://sloc.xyz/github/mutating/throng/?category=code)](https://github.com/boyter/scc/)
+[![Hits-of-Code](https://hitsofcode.com/github/mutating/throng?branch=main)](https://hitsofcode.com/github/mutating/throng/view?branch=main)
+[![Test-Package](https://github.com/mutating/throng/actions/workflows/tests_and_coverage.yml/badge.svg)](https://github.com/mutating/throng/actions/workflows/tests_and_coverage.yml)
+[![Python versions](https://img.shields.io/pypi/pyversions/throng.svg)](https://pypi.python.org/pypi/throng)
+[![PyPI version](https://badge.fury.io/py/throng.svg)](https://badge.fury.io/py/throng)
+[![Checked with mypy](http://www.mypy-lang.org/static/mypy_badge.svg)](http://mypy-lang.org/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mutating/throng)
+
+</details>
+
+![logo](https://raw.githubusercontent.com/mutating/throng/develop/docs/assets/logo_1.svg)
 
 Sometimes our programs need to execute console commands. In some cases, a command may be executed locally, while in others it may be executed in parallel across thousands of machines in the cloud. This library serves as an abstraction layer over various command execution environments, allowing you to write code once that will run anywhere. Specific execution environments are connected here as plugins with a unified API, and your code doesn’t need to know the internal workings of a specific plugin to run commands within it.
 

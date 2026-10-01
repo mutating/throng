@@ -4,6 +4,7 @@ from throng.errors import (
     CannotCancelNonExistingIsolateError,
     CannotInstallDependencyError,
     NotSupportedCommandError,
+    PreparationCommandFailedError,
 )
 
 
@@ -13,6 +14,7 @@ from throng.errors import (
         CannotCancelNonExistingIsolateError,
         CannotInstallDependencyError,
         NotSupportedCommandError,
+        PreparationCommandFailedError,
     ],
 )
 def test_library_errors_specialize_runtime_error(error_type):
@@ -27,6 +29,9 @@ def test_library_errors_specialize_runtime_error(error_type):
         (CannotCancelNonExistingIsolateError, CannotInstallDependencyError),
         (CannotCancelNonExistingIsolateError, NotSupportedCommandError),
         (CannotInstallDependencyError, NotSupportedCommandError),
+        (CannotCancelNonExistingIsolateError, PreparationCommandFailedError),
+        (CannotInstallDependencyError, PreparationCommandFailedError),
+        (NotSupportedCommandError, PreparationCommandFailedError),
     ],
 )
 def test_library_errors_have_distinct_types(first, second):

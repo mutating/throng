@@ -19,6 +19,11 @@ from throng.extensions.temporary_directory.manager import TemporaryDirectoryMana
         'mixed',
         'keyword_both',
         'exclude_only',
+        'prepare_only',
+        'positional_all',
+        'keyword_all',
+        'empty_prepare',
+        'none_prepare',
     ],
 )
 def test_slot_provides_builtin_managers(tmp_path, monkeypatch, form):
@@ -26,16 +31,28 @@ def test_slot_provides_builtin_managers(tmp_path, monkeypatch, form):
     monkeypatch.chdir(tmp_path)
     path = tmp_path / 'source'
     exclude = ['*.tmp']
+    prepare = ['first', 'second', 'first']
     forms = {
-        'default': ((), {}, Path(), None),
-        'positional_path': ((path,), {}, path, None),
-        'keyword_path': ((), {'path': path}, path, None),
-        'positional_both': ((path, exclude), {}, path, exclude),
-        'mixed': ((path,), {'exclude': exclude}, path, exclude),
-        'keyword_both': ((), {'path': path, 'exclude': exclude}, path, exclude),
-        'exclude_only': ((), {'exclude': exclude}, Path(), exclude),
+        'default': ((), {}, Path(), None, None),
+        'positional_path': ((path,), {}, path, None, None),
+        'keyword_path': ((), {'path': path}, path, None, None),
+        'positional_both': ((path, exclude), {}, path, exclude, None),
+        'mixed': ((path,), {'exclude': exclude}, path, exclude, None),
+        'keyword_both': ((), {'path': path, 'exclude': exclude}, path, exclude, None),
+        'exclude_only': ((), {'exclude': exclude}, Path(), exclude, None),
+        'prepare_only': ((), {'prepare': prepare}, Path(), None, prepare),
+        'positional_all': ((path, exclude, prepare), {}, path, exclude, prepare),
+        'keyword_all': (
+            (),
+            {'path': path, 'exclude': exclude, 'prepare': prepare},
+            path,
+            exclude,
+            prepare,
+        ),
+        'empty_prepare': ((), {'prepare': []}, Path(), None, []),
+        'none_prepare': ((), {'prepare': None}, Path(), None, None),
     }
-    args, kwargs, expected_path, expected_exclude = forms[form]
+    args, kwargs, expected_path, expected_exclude, expected_prepare = forms[form]
 
     managers = throng(*args, **kwargs)
 
@@ -45,6 +62,7 @@ def test_slot_provides_builtin_managers(tmp_path, monkeypatch, form):
     for name in ('local', 'temporary_directory'):
         assert managers[name].path == expected_path
         assert managers[name].exclude == expected_exclude
+        assert managers[name].prepare == expected_prepare
 
 
 def test_slot_uses_throng_entrypoint_group():
@@ -96,19 +114,22 @@ def test_slot_preserves_path_and_exclusion_values(
 
 def test_slot_calls_do_not_share_managers_or_settings(tmp_path):
     """Create independent managers without leaking earlier settings into defaults."""
-    first = throng(tmp_path, ['*.tmp'])
-    second = throng(tmp_path, ['*.tmp'])
+    first = throng(tmp_path, ['*.tmp'], ['first'])
+    second = throng(tmp_path, ['*.tmp'], ['first'])
     for name in ('local', 'temporary_directory'):
         first[name].path = tmp_path / 'changed'
         first[name].exclude.append('extra')
+        first[name].prepare.append('extra')
     defaults = throng()
 
     for name in ('local', 'temporary_directory'):
         assert first[name] is not second[name]
         assert second[name].path == tmp_path
         assert second[name].exclude == ['*.tmp']
+        assert second[name].prepare == ['first']
         assert defaults[name].path == Path()
         assert defaults[name].exclude is None
+        assert defaults[name].prepare is None
 
 
 @pytest.mark.parametrize('plugin', ['local', 'temporary_directory'])

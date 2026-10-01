@@ -226,3 +226,18 @@ def test_isolate_requires_concrete_operations():
     assert AbstractIsolate.__abstractmethods__ == {'run', 'read', 'kill', 'install'}
     with pytest.raises(TypeError, match='abstract'):
         AbstractIsolate()
+
+
+@pytest.mark.parametrize('explicit_init', [False, True])
+def test_existing_isolate_subclasses_can_omit_prepare(explicit_init):
+    """Keep legacy subclasses constructible, including a no-argument super call."""
+    methods = {name: Mock() for name in ('run', 'read', 'kill', 'install')}
+    if explicit_init:
+        methods['__init__'] = lambda self: super(type(self), self).__init__()
+    isolate_type = type('LegacyIsolate', (AbstractIsolate,), methods)
+
+    isolate = isolate_type()
+
+    methods['run'].assert_not_called()
+    methods['kill'].assert_not_called()
+    isolate.kill()

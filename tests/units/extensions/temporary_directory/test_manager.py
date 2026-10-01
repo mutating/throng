@@ -24,15 +24,18 @@ def test_read_delegates_source_settings(tmp_path, monkeypatch, exclude):
 
 @pytest.mark.parametrize('state', [b'', b'state', b'\x00\xff'])
 @pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
+@pytest.mark.parametrize('prepare', [None, [], ['first', 'second']])
 def test_get_delegates_snapshot_without_reading_source(
     tmp_path,
     monkeypatch,
     state,
     exclude,
+    prepare,
 ):
     """Restore the supplied opaque snapshot without rereading the source directory."""
     expected_exclude = None if exclude is None else exclude.copy()
-    manager = TemporaryDirectoryManager(tmp_path, exclude)
+    expected_prepare = None if prepare is None else prepare.copy()
+    manager = TemporaryDirectoryManager(tmp_path, exclude, prepare)
     constructor, read, read_source = Mock(), Mock(), Mock()
     monkeypatch.setattr(
         'throng.extensions.temporary_directory.manager.TemporaryDirectoryIsolate',
@@ -45,7 +48,7 @@ def test_get_delegates_snapshot_without_reading_source(
     )
 
     assert manager.get(state) is constructor.return_value
-    constructor.assert_called_once_with(state, expected_exclude)
+    constructor.assert_called_once_with(state, expected_exclude, expected_prepare)
     read.assert_not_called()
     read_source.assert_not_called()
 

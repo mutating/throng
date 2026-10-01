@@ -6,20 +6,60 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 from throng.abstracts.results import SimpleRunResult
+from throng.errors import PreparationCommandFailedError
 from throng.extensions.local.isolate import LocalIsolate
 from throng.extensions.local.manager import LocalManager
 
 
 @pytest.mark.parametrize('as_string', [False, True])
 @pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
-def test_manager_keeps_source_settings(tmp_path, as_string, exclude):
+@pytest.mark.parametrize('prepare', [None, [], ['first', 'second']])
+def test_manager_keeps_source_settings(tmp_path, as_string, exclude, prepare):
     """Use shared manager initialization for paths and file exclusions."""
     expected_exclude = None if exclude is None else exclude.copy()
-    manager = LocalManager(str(tmp_path) if as_string else tmp_path, exclude)
+    expected_prepare = None if prepare is None else prepare.copy()
+    manager = LocalManager(str(tmp_path) if as_string else tmp_path, exclude, prepare)
 
     assert manager.path == tmp_path
     assert isinstance(manager.path, Path)
     assert manager.exclude == expected_exclude
+    assert manager.prepare == expected_prepare
+    assert not manager.lock.locked()
+
+
+@pytest.mark.parametrize('prepare', [None, [], ['first', 'second', 'first']])
+def test_get_forwards_preparation_and_existing_resources(tmp_path, monkeypatch, prepare):
+    """Give the isolate its preparation, source path and the manager's shared lock."""
+    manager = LocalManager(tmp_path, None, prepare)
+    expected_prepare = None if prepare is None else prepare.copy()
+    constructor, read = Mock(), Mock()
+    monkeypatch.setattr('throng.extensions.local.manager.LocalIsolate', constructor)
+    monkeypatch.setattr(manager, 'read', read)
+
+    assert manager.get(b'ignored snapshot') is constructor.return_value
+
+    constructor.assert_called_once_with(manager.lock, tmp_path, expected_prepare)
+    read.assert_not_called()
+    assert not manager.lock.locked()
+
+
+@pytest.mark.parametrize('failure', ['preparation', 'exception', 'interrupt'])
+def test_get_preserves_constructor_failure(tmp_path, monkeypatch, failure):
+    """Do not wrap or retry a preparation failure from isolate creation."""
+    manager = LocalManager(tmp_path, None, ['setup'])
+    error = {
+        'preparation': PreparationCommandFailedError('setup failed', [SimpleRunResult(False)]),
+        'exception': OSError('creation failed'),
+        'interrupt': KeyboardInterrupt(),
+    }[failure]
+    constructor = Mock(side_effect=error)
+    monkeypatch.setattr('throng.extensions.local.manager.LocalIsolate', constructor)
+
+    with pytest.raises(type(error)) as caught:
+        manager.get(b'ignored')
+
+    assert caught.value is error
+    constructor.assert_called_once_with(manager.lock, tmp_path, ['setup'])
     assert not manager.lock.locked()
 
 

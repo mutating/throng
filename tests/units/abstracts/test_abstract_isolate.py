@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from types import MethodType
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
@@ -5,7 +8,244 @@ from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.results import SimpleRunResult
-from throng.errors import NotSupportedCommandError
+from throng.errors import NotSupportedCommandError, PreparationCommandFailedError
+
+
+@pytest.mark.parametrize('form', ['omitted', 'none', 'empty'])
+def test_absent_preparation_does_not_execute_or_destroy(form):
+    """Keep an isolate alive without running commands when no preparation is needed."""
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    options = {'omitted': {}, 'none': {'prepare': None}, 'empty': {'prepare': []}}
+
+    assert AbstractIsolate.__init__(isolate, **options[form]) is None
+
+    assert isolate.mock_calls == []
+    assert options['empty']['prepare'] == []
+
+
+@pytest.mark.parametrize(
+    'commands',
+    [['one'], ['first', 'second', 'first'], ['', ' ', 'Привет', 'a\nb', '"a b"; x']],
+)
+@pytest.mark.parametrize('returncode', [0, 7, None])
+def test_successful_preparation_preserves_commands_and_keeps_isolate_alive(commands, returncode):
+    """Execute unchanged commands in order and trust success rather than exit codes."""
+    original_commands = commands.copy()
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    results = [SimpleRunResult(True, returncode, command, 'diagnostic') for command in commands]
+    isolate.run.side_effect = results
+
+    assert AbstractIsolate.__init__(isolate, commands) is None
+
+    token = isolate.run.call_args.kwargs['token']
+    assert isinstance(token, DefaultToken)
+    assert isolate.mock_calls == [call.run(command, token=token) for command in original_commands]
+    assert commands == original_commands
+    assert [(result.success, result.returncode, result.stdout, result.stderr) for result in results] == [
+        (True, returncode, command, 'diagnostic') for command in original_commands
+    ]
+
+
+@pytest.mark.parametrize('blocked_command', ['first', 'last'])
+def test_constructor_waits_until_preparation_has_finished(blocked_command):
+    """Keep initialization blocked until every preparation command has returned."""
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    entered, release = Event(), Event()
+
+    def execute(command, **_kwargs):
+        if command == blocked_command:
+            entered.set()
+            assert release.wait(5)
+        return SimpleRunResult(True)
+
+    isolate.run.side_effect = execute
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(AbstractIsolate.__init__, isolate, ['first', 'last'])
+        try:
+            assert entered.wait(5)
+            assert not future.done()
+        finally:
+            release.set()
+        assert future.result(timeout=5) is None
+
+    assert [entry.args[0] for entry in isolate.run.call_args_list] == ['first', 'last']
+    isolate.kill.assert_not_called()
+
+
+@pytest.mark.parametrize('failed_at', [0, 1, 2, 'all'])
+@pytest.mark.parametrize('returncode', [0, 1, -9, None])
+def test_unsuccessful_preparation_finishes_chain_then_cleans_up(failed_at, returncode):
+    """Report the complete ordered results and clean up once before raising."""
+    commands = ['first', 'second', 'third']
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    results = [
+        SimpleRunResult(failed_at not in (index, 'all'), returncode, f'out-{index}', f'err-{index}')
+        for index in range(3)
+    ]
+    isolate.run.side_effect = results
+
+    with pytest.raises(PreparationCommandFailedError) as caught:
+        AbstractIsolate.__init__(isolate, commands)
+
+    token = isolate.run.call_args.kwargs['token']
+    assert isinstance(token, DefaultToken)
+    assert isolate.mock_calls == [call.run(command, token=token) for command in commands] + [call.kill()]
+    assert commands == ['first', 'second', 'third']
+    assert len(caught.value.results) == len(results)
+    assert all(actual is original for actual, original in zip(caught.value.results, results))
+    assert [(result.success, result.returncode, result.stdout, result.stderr) for result in results] == [
+        (failed_at not in (index, 'all'), returncode, f'out-{index}', f'err-{index}')
+        for index in range(3)
+    ]
+    assert caught.value.message
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize('success', [False, True])
+def test_preparation_uses_success_instead_of_result_truthiness(success):
+    """Interpret only the protocol's success flag, never the result object's truthiness."""
+    isolate = Mock(spec=AbstractIsolate)
+    result = MagicMock(success=success)
+    result.__bool__.side_effect = AssertionError('Result truthiness must not be inspected.')
+    isolate.chain.return_value = [result]
+
+    if success:
+        assert AbstractIsolate.__init__(isolate, ['prepare']) is None
+        isolate.kill.assert_not_called()
+    else:
+        with pytest.raises(PreparationCommandFailedError) as caught:
+            AbstractIsolate.__init__(isolate, ['prepare'])
+        assert caught.value.results[0] is result
+        isolate.kill.assert_called_once_with()
+    result.__bool__.assert_not_called()
+
+
+@pytest.mark.parametrize('position', [0, 1, 2])
+@pytest.mark.parametrize('error_type', [RuntimeError, OSError, NotSupportedCommandError])
+def test_preparation_exception_stops_execution_and_preserves_cause(position, error_type):
+    """Stop on an executor exception, release resources and expose the original cause."""
+    commands = ['first', 'second', 'third']
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    original = error_type('execution failed')
+    isolate.run.side_effect = [SimpleRunResult(True)] * position + [original]
+
+    with pytest.raises(PreparationCommandFailedError) as caught:
+        AbstractIsolate.__init__(isolate, commands)
+
+    token = isolate.run.call_args.kwargs['token']
+    assert isolate.mock_calls == [
+        call.run(command, token=token) for command in commands[:position + 1]
+    ] + [call.kill()]
+    assert caught.value.__cause__ is original
+    assert caught.value.__suppress_context__ is True
+    assert caught.value.results == []
+    assert caught.value.message
+    assert commands == ['first', 'second', 'third']
+
+
+@pytest.mark.parametrize('position', [0, 1, 2])
+@pytest.mark.parametrize('error_type', [KeyboardInterrupt, SystemExit, GeneratorExit, BaseException])
+def test_preparation_interruption_cleans_up_and_keeps_original_exception(position, error_type):
+    """Preserve process-control exceptions by identity after releasing resources."""
+    commands = ['first', 'second', 'third']
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    original = error_type('interrupted')
+    isolate.run.side_effect = [SimpleRunResult(True)] * position + [original]
+
+    with pytest.raises(error_type) as caught:
+        AbstractIsolate.__init__(isolate, commands)
+
+    token = isolate.run.call_args.kwargs['token']
+    assert isolate.mock_calls == [
+        call.run(command, token=token) for command in commands[:position + 1]
+    ] + [call.kill()]
+    assert caught.value is original
+    assert caught.value.args == ('interrupted',)
+    assert caught.value.__cause__ is None
+
+
+def test_custom_chain_results_are_preserved_without_reexecuting_commands():
+    """Allow plugins to override chain and keep their full result list on failure."""
+    isolate = Mock(spec=AbstractIsolate)
+    results = [Mock(success=True, extra=object()), Mock(success=False, extra=object())]
+    isolate.chain.return_value = results
+
+    with pytest.raises(PreparationCommandFailedError) as caught:
+        AbstractIsolate.__init__(isolate, ['same', 'same'])
+
+    assert caught.value.results is results
+    assert isolate.mock_calls == [call.chain('same', 'same'), call.kill()]
+
+
+def test_custom_chain_exception_is_wrapped_with_its_original_diagnostics():
+    """Keep a plugin-specific preparation error as the cause instead of discarding it."""
+    isolate = Mock(spec=AbstractIsolate)
+    results = [SimpleRunResult(False, 9, '', 'plugin diagnostic')]
+    original = PreparationCommandFailedError('plugin failed', results)
+    isolate.chain.side_effect = original
+
+    with pytest.raises(PreparationCommandFailedError) as caught:
+        AbstractIsolate.__init__(isolate, ['prepare'])
+
+    assert caught.value is not original
+    assert caught.value.__cause__ is original
+    assert original.results is results
+    assert original.message == 'plugin failed'
+    assert isolate.mock_calls == [call.chain('prepare'), call.kill()]
+
+
+@pytest.mark.parametrize('failure', ['result', 'exception'])
+def test_cleanup_errors_are_not_swallowed(failure):
+    """Expose cleanup failure and retain the execution exception as its context."""
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    original = RuntimeError('execution failed') if failure == 'exception' else None
+    isolate.run.side_effect = original
+    isolate.run.return_value = SimpleRunResult(False)
+    cleanup_error = OSError('cleanup failed')
+    isolate.kill.side_effect = cleanup_error
+
+    with pytest.raises(OSError, match='cleanup failed') as caught:
+        AbstractIsolate.__init__(isolate, ['prepare'])
+
+    assert caught.value is cleanup_error
+    assert caught.value.__context__ is original
+    isolate.run.assert_called_once()
+    isolate.kill.assert_called_once_with()
+
+
+@pytest.mark.parametrize('failure', ['result', 'exception'])
+def test_preparation_failures_do_not_share_results_with_other_isolates(failure):
+    """Keep diagnostic lists independent and allow a later isolate to prepare normally."""
+    errors = []
+    for _ in range(2):
+        isolate = Mock(spec=AbstractIsolate)
+        isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+        isolate.run.return_value = SimpleRunResult(False)
+        if failure == 'exception':
+            isolate.run.side_effect = RuntimeError('execution failed')
+        with pytest.raises(PreparationCommandFailedError) as caught:
+            AbstractIsolate.__init__(isolate, ['prepare'])
+        errors.append(caught.value)
+
+    errors[0].results.append(SimpleRunResult(True))
+    assert len(errors[1].results) == (1 if failure == 'result' else 0)
+    if failure == 'result':
+        assert errors[0].results[0] is not errors[1].results[0]
+    fresh = Mock(spec=AbstractIsolate)
+    fresh.chain = MethodType(AbstractIsolate.chain, fresh)
+    fresh.run.return_value = SimpleRunResult(True)
+
+    assert AbstractIsolate.__init__(fresh, ['prepare']) is None
+
+    fresh.run.assert_called_once()
+    fresh.kill.assert_not_called()
 
 
 @pytest.mark.parametrize('token_kind', ['default', 'active', 'cancelled', 'unreadable'])

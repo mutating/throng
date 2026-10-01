@@ -6,7 +6,11 @@ import pytest
 from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.abstract_manager import AbstractManager, ContextIsolateManager
-from throng.errors import CannotCancelNonExistingIsolateError
+from throng.abstracts.results import SimpleRunResult
+from throng.errors import (
+    CannotCancelNonExistingIsolateError,
+    PreparationCommandFailedError,
+)
 from throng.extensions.local.manager import LocalManager
 from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
 
@@ -30,6 +34,33 @@ def test_initialization_is_lazy(tmp_path, monkeypatch, path_kind, name, exclude)
 def test_default_exclusions_are_absent():
     """Leave file exclusions unset when callers omit them."""
     assert TemporaryDirectoryManager('.').exclude is None
+
+
+@pytest.mark.parametrize('as_string', [False, True])
+@pytest.mark.parametrize('prepare', [None, [], ['first', 'second', 'first']])
+def test_initialization_stores_preparation_without_executing(as_string, prepare):
+    """Store preparation independently of path normalization, without doing any work."""
+    manager = Mock(spec=AbstractManager)
+    path = Path('not created') / 'каталог'
+    expected = None if prepare is None else prepare.copy()
+
+    AbstractManager.__init__(manager, str(path) if as_string else path, prepare=prepare)
+
+    assert manager.path == path
+    assert manager.exclude is None
+    assert manager.prepare == expected
+    assert prepare == expected
+    assert manager.mock_calls == []
+
+
+def test_default_preparation_is_absent():
+    """Keep preparation optional for managers that inherit the base constructor."""
+    manager = Mock(spec=AbstractManager)
+
+    AbstractManager.__init__(manager, '.')
+
+    assert manager.prepare is None
+    assert manager.mock_calls == []
 
 
 @pytest.mark.parametrize(
@@ -78,9 +109,10 @@ def test_manager_requires_read_and_get(implemented):
             manager_type('.')
 
 
-def test_scope_is_lazy_and_independent(monkeypatch):
+@pytest.mark.parametrize('prepare', [None, [], ['prepare']])
+def test_scope_is_lazy_and_independent(monkeypatch, prepare):
     """Allocate a fresh context on demand without creating an isolate early."""
-    manager = TemporaryDirectoryManager('.')
+    manager = TemporaryDirectoryManager('.', prepare=prepare)
     read, get = Mock(), Mock()
     monkeypatch.setattr(manager, 'read', read)
     monkeypatch.setattr(manager, 'get', get)
@@ -92,6 +124,42 @@ def test_scope_is_lazy_and_independent(monkeypatch):
     assert first.isolate is second.isolate is None
     read.assert_not_called()
     get.assert_not_called()
+
+
+@pytest.mark.parametrize('operation', ['scope', 'run', 'chain'])
+@pytest.mark.parametrize('failure', ['preparation', 'interrupt', 'exit'])
+def test_failed_preparation_never_exposes_an_isolate(monkeypatch, operation, failure):
+    """Propagate creation failures unchanged and leave cleanup to the failed constructor."""
+    manager = TemporaryDirectoryManager('.', prepare=['setup'])
+    results = [SimpleRunResult(False, 1, '', 'setup failed')]
+    error = {
+        'preparation': PreparationCommandFailedError('setup failed', results),
+        'interrupt': KeyboardInterrupt(),
+        'exit': SystemExit(2),
+    }[failure]
+    events = Mock()
+    events.read.return_value = b'snapshot'
+    events.get.side_effect = error
+    monkeypatch.setattr(manager, 'read', events.read)
+    monkeypatch.setattr(manager, 'get', events.get)
+    context = manager.scope
+    expectation = pytest.raises(type(error))
+
+    if operation == 'scope':
+        with expectation as caught, context:
+            pytest.fail('Failed preparation must prevent entry.')
+        assert context.isolate is None
+    else:
+        with expectation as caught:
+            getattr(manager, operation)('must not run')
+
+    assert caught.value is error
+    assert events.mock_calls == [call.read(), call.get(b'snapshot')]
+    events.get.return_value.run.assert_not_called()
+    events.get.return_value.chain.assert_not_called()
+    events.get.return_value.kill.assert_not_called()
+    if failure == 'preparation':
+        assert caught.value.results is results
 
 
 @pytest.mark.parametrize('state', [b'', b'snapshot', b'\x00\xff'])

@@ -7,10 +7,10 @@ from throng.extensions.temporary_directory.manager import TemporaryDirectoryMana
 
 
 @throng.plugin(unique=True)
-def local(path: Union[str, Path] = '.', exclude: Optional[List[str]] = None) -> LocalManager:
-    return LocalManager(path, exclude)
+def local(path: Union[str, Path] = '.', exclude: Optional[List[str]] = None, prepare: Optional[List[str]] = None) -> LocalManager:
+    return LocalManager(path, exclude, prepare)
 
 
 @throng.plugin(unique=True)
-def temporary_directory(path: Union[str, Path] = '.', exclude: Optional[List[str]] = None) -> TemporaryDirectoryManager:
-    return TemporaryDirectoryManager(path, exclude)
+def temporary_directory(path: Union[str, Path] = '.', exclude: Optional[List[str]] = None, prepare: Optional[List[str]] = None) -> TemporaryDirectoryManager:
+    return TemporaryDirectoryManager(path, exclude, prepare)

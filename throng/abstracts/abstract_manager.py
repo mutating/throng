@@ -33,9 +33,10 @@ class ContextIsolateManager:
 class AbstractManager(ABC):
     path: Path
 
-    def __init__(self, path: Union[str, Path], exclude: Optional[List[str]] = None) -> None:
+    def __init__(self, path: Union[str, Path], exclude: Optional[List[str]] = None, prepare: Optional[List[str]] = None) -> None:
         self.path = Path(path) if isinstance(path, str) else path
         self.exclude = exclude
+        self.prepare = prepare
 
     def __repr__(self) -> str:
         return describe_call(type(self).__name__, [str(self.path)], {'exclude': self.exclude}, filters={'exclude': not_none})  # type: ignore[misc]

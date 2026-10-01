@@ -15,13 +15,15 @@ from throng.extensions.temporary_directory.read import read_directory
 
 
 class TemporaryDirectoryIsolate(AbstractIsolate):
-    def __init__(self, state: bytes, exclude: Optional[List[str]]) -> None:
+    def __init__(self, state: bytes, exclude: Optional[List[str]], prepare: Optional[List[str]] = None) -> None:
         self.lock = Lock()
         self.exclude = exclude
         self.used = False
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name)
         self.set_state(state)
+
+        super().__init__(prepare)
 
     def run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
         with self.lock:

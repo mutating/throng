@@ -58,7 +58,8 @@ def test_get_passes_explicit_token_to_creation_without_preparation(prepare):
 
 def test_get_shares_explicit_token_between_creation_and_preparation():
     """Use the same caller-owned token for creation and every ordered setup command."""
-    commands = ['first', 'second', 'first']
+    commands = ['first', 'second', 'first', 'third']
+    expected_commands = commands.copy()
     events = []
     token = SimpleToken()
     isolate = Mock(spec=AbstractIsolate)
@@ -80,11 +81,12 @@ def test_get_shares_explicit_token_between_creation_and_preparation():
     assert AbstractManager.get(manager, b'snapshot', token=token) is isolate
 
     assert events == [('create', b'snapshot', token)] + [
-        ('prepare', command, token) for command in commands
+        ('prepare', command, token) for command in expected_commands
     ]
     assert all(passed_token is token for _, _, passed_token in events)
     manager._get.assert_called_once_with(b'snapshot', token=token)
-    assert isolate.mock_calls == [call._run(command, token=token) for command in commands]
+    assert isolate.mock_calls == [call._run(command, token=token) for command in expected_commands]
+    assert commands == expected_commands
     isolate.kill.assert_not_called()
 
 
@@ -116,6 +118,53 @@ def test_get_cancellation_during_preparation_stops_and_cleans_up(completed_befor
     expected_calls = [call._run('first', token=token)] if completed_before_cancellation else []
     assert isolate.mock_calls == [*expected_calls, call.kill()]
     isolate.kill.assert_called_once_with()
+
+
+def test_get_skips_preparation_when_creation_hook_cancels_token():
+    """Honor cancellation triggered inside _get before the first setup command."""
+    token = SimpleToken()
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    manager = Mock(spec=AbstractManager, prepare=['first', 'second'])
+
+    def create(state, **kwargs):
+        assert state == b'snapshot'
+        assert kwargs['token'] is token
+        token.cancel()
+        return isolate
+
+    manager._get.side_effect = create
+
+    with pytest.raises(PreparationCommandFailedError) as caught:
+        AbstractManager.get(manager, b'snapshot', token=token)
+
+    manager._get.assert_called_once_with(b'snapshot', token=token)
+    assert isinstance(caught.value.__cause__, InterruptedChainError)
+    assert "'first'" in str(caught.value.__cause__)
+    assert isolate.mock_calls == [call.kill()]
+    isolate.kill.assert_called_once_with()
+
+
+def test_failed_preparation_keeps_explicit_token_and_result_through_cleanup():
+    """Keep the caller's token on a failed command while preserving its result."""
+    token = SimpleToken()
+    failed = SimpleRunResult(False, 17, 'output', 'diagnostic')
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
+    isolate._run.return_value = failed
+    manager = Mock(spec=AbstractManager, prepare=['bad', 'unreachable'])
+    manager._get.return_value = isolate
+
+    with pytest.raises(PreparationCommandFailedError) as caught:
+        AbstractManager.get(manager, b'snapshot', token=token)
+
+    manager._get.assert_called_once_with(b'snapshot', token=token)
+    assert manager._get.call_args.kwargs['token'] is token
+    assert isolate.mock_calls == [call._run('bad', token=token), call.kill()]
+    assert isolate._run.call_args.kwargs['token'] is token
+    assert isinstance(caught.value.__cause__, NotSuccessfulRunError)
+    assert caught.value.__cause__.result is failed
 
 
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@ from contextlib import nullcontext
 from importlib import import_module
 from pathlib import Path
 from shutil import rmtree
+from tempfile import TemporaryDirectory
 from threading import Event
 
 import pytest
@@ -270,6 +271,57 @@ def test_closed_chain_cancellation_happens_after_preparation(
     assert directory.exists() is (builtin_plugin_name == 'local')
     assert (tmp_path / 'ready').exists() is (builtin_plugin_name == 'local')
     assert not (tmp_path / 'should_not_run').exists()
+
+
+@pytest.mark.parametrize('completed_before_cancellation', [0, 1])
+def test_get_cancellation_cleans_up_builtin_isolate(
+    tmp_path, monkeypatch, builtin_plugin_name, completed_before_cancellation,
+):
+    """Stop setup under an explicit token and release a real isolate before raising."""
+    (tmp_path / 'seed').write_text('original')
+    token = SimpleToken(cancelled=completed_before_cancellation == 0)
+    module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
+    executions = []
+    allocated = []
+
+    def execute(command, **kwargs):
+        assert command == 'first'
+        assert kwargs['token'] is token
+        executions.append((command, Path(kwargs['directory'])))
+        token.cancel()
+        return SimpleRunResult(True)
+
+    def allocate():
+        directory = TemporaryDirectory()
+        allocated.append(directory)
+        return directory
+
+    monkeypatch.setattr(module, 'run', execute)
+    if builtin_plugin_name == 'temporary_directory':
+        monkeypatch.setattr(module, 'TemporaryDirectory', allocate)
+    manager = throng(tmp_path, prepare=['first', 'second'])[builtin_plugin_name]
+
+    try:
+        with pytest.raises(PreparationCommandFailedError) as caught:
+            manager.get(manager.read(), token=token)
+
+        assert isinstance(caught.value.__cause__, InterruptedChainError)
+        skipped_command = 'first' if completed_before_cancellation == 0 else 'second'
+        assert repr(skipped_command) in str(caught.value.__cause__)
+        assert [command for command, _ in executions] == (
+            ['first'] if completed_before_cancellation else []
+        )
+        assert (tmp_path / 'seed').read_text() == 'original'
+        if builtin_plugin_name == 'local':
+            assert not manager.lock.locked()
+            assert all(directory == tmp_path for _, directory in executions)
+        else:
+            assert len(allocated) == 1
+            assert not Path(allocated[0].name).exists()
+            assert all(directory == Path(allocated[0].name) for _, directory in executions)
+    finally:
+        for directory in allocated:
+            directory.cleanup()
 
 
 @pytest.mark.parametrize('blocked_command', ['first', 'last'])

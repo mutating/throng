@@ -58,6 +58,7 @@ def test_get_passes_explicit_token_to_preparation_executor(tmp_path, monkeypatch
     execute = Mock(return_value=SimpleRunResult(True))
     monkeypatch.setattr('throng.extensions.local.isolate.run', execute)
     commands = ['first', 'second']
+    expected_commands = commands.copy()
     manager = LocalManager(tmp_path, None, commands)
     token = SimpleToken()
 
@@ -66,9 +67,10 @@ def test_get_passes_explicit_token_to_preparation_executor(tmp_path, monkeypatch
         assert isinstance(isolate, LocalIsolate)
         assert execute.call_args_list == [
             call(command, token=token, catch_output=True, catch_exceptions=True, directory=tmp_path)
-            for command in commands
+            for command in expected_commands
         ]
         assert all(entry.kwargs['token'] is token for entry in execute.call_args_list)
+        assert commands == expected_commands
     finally:
         isolate.kill()
 

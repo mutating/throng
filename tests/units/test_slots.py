@@ -120,7 +120,7 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
             pass
 
     class PluginManager(AbstractManager):
-        def _get(self, state):
+        def _get(self, state, token=DefaultToken()):  # noqa: B008, ARG002
             return PluginIsolate(state)
 
         def read(self):

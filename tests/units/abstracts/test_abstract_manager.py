@@ -32,7 +32,9 @@ def test_absent_preparation_does_not_execute_or_destroy(form):
     manager._get.return_value = isolate
 
     assert AbstractManager.get(manager, b'snapshot') is isolate
-    manager._get.assert_called_once_with(b'snapshot')
+    token = manager._get.call_args.kwargs['token']
+    assert isinstance(token, DefaultToken)
+    manager._get.assert_called_once_with(b'snapshot', token=token)
 
     assert isolate.mock_calls == []
     assert options['empty']['prepare'] == []
@@ -222,7 +224,9 @@ def test_custom_chain_failure_preserves_result_without_reexecuting_commands():
 
     assert caught.value.__cause__ is original
     assert caught.value.__cause__.result is result
-    assert isolate.mock_calls == [call.chain('same', 'same', exception=True), call.kill()]
+    token = isolate.chain.call_args.kwargs['token']
+    assert isinstance(token, DefaultToken)
+    assert isolate.mock_calls == [call.chain('same', 'same', exception=True, token=token), call.kill()]
 
 
 def test_custom_chain_exception_is_wrapped_with_its_original_diagnostics():
@@ -242,7 +246,9 @@ def test_custom_chain_exception_is_wrapped_with_its_original_diagnostics():
     assert caught.value.__cause__ is original
     assert original.__cause__.result is result
     assert str(original) == 'plugin failed'
-    assert isolate.mock_calls == [call.chain('prepare', exception=True), call.kill()]
+    token = isolate.chain.call_args.kwargs['token']
+    assert isinstance(token, DefaultToken)
+    assert isolate.mock_calls == [call.chain('prepare', exception=True, token=token), call.kill()]
 
 
 @pytest.mark.parametrize('failure', ['result', 'exception'])
@@ -695,14 +701,16 @@ def test_exception_policy_applies_only_to_user_commands(monkeypatch, method, sta
     with expectation as caught:
         result = getattr(manager, method)('command', token=token, exception=exception)
 
-    create.assert_called_once_with(b'')
+    creation_token = create.call_args.kwargs['token']
+    assert isinstance(creation_token, DefaultToken)
+    create.assert_called_once_with(b'', token=creation_token)
     if stage == 'creation':
         assert caught.value is creation_error
         assert isolate.mock_calls == []
         return
 
     preparation_token = isolate._run.call_args_list[0].kwargs['token']
-    assert isinstance(preparation_token, DefaultToken)
+    assert preparation_token is creation_token
     expected_calls = [call._run('prepare', token=preparation_token)]
     if stage == 'command':
         expected_calls.append(call._run('command', token=token))

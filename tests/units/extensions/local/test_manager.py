@@ -43,7 +43,9 @@ def test_get_keeps_preparation_outside_isolate_constructor(tmp_path, monkeypatch
 
     constructor.assert_called_once_with(manager.lock, tmp_path)
     if operation == 'get' and prepare:
-        constructor.return_value.chain.assert_called_once_with(*expected_prepare, exception=True)
+        token = constructor.return_value.chain.call_args.kwargs['token']
+        assert isinstance(token, DefaultToken)
+        constructor.return_value.chain.assert_called_once_with(*expected_prepare, exception=True, token=token)
     else:
         constructor.return_value.chain.assert_not_called()
     assert prepare == expected_prepare

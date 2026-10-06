@@ -23,7 +23,7 @@ class TemporaryDirectoryIsolate(AbstractIsolate):
         self.path = Path(self.directory.name)
         self.set_state(state)
 
-    def run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
+    def _run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
         with self.lock:
             if self.used:
                 raise DirectoryDoesNotExistError('You cannot reuse a destroyed isolate.')

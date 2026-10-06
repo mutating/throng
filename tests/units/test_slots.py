@@ -182,6 +182,56 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
         del throng['external_test_plugin']
 
 
+def test_external_plugin_uses_explicit_get_token_for_creation_and_preparation(tmp_path):
+    """Let a registered plugin consume the same token used by its setup commands."""
+    executions = []
+    cleaned = []
+
+    class TokenAwareIsolate(AbstractIsolate):
+        def __init__(self, state, creation_token):
+            self.state = state
+            self.creation_token = creation_token
+
+        def _run(self, command, token=DefaultToken()):  # noqa: B008
+            executions.append((command, token))
+            return SimpleRunResult(True)
+
+        def read(self):
+            return self.state
+
+        def kill(self):
+            cleaned.append(self)
+
+        def install(self, *_dependencies):
+            pass
+
+    class TokenAwareManager(AbstractManager):
+        def _get(self, state, token=DefaultToken()):  # noqa: B008
+            return TokenAwareIsolate(state, token)
+
+        def read(self):
+            return b'external snapshot'
+
+    @throng.plugin(unique=True)
+    def token_aware_test_plugin(path='.', exclude=None, prepare=None):
+        return TokenAwareManager(path, exclude, prepare)
+
+    try:
+        manager = throng['token_aware_test_plugin'](tmp_path, prepare=['first', 'second'])['token_aware_test_plugin']
+        token = SimpleToken()
+        isolate = manager.get(manager.read(), token=token)
+
+        assert isolate.read() == b'external snapshot'
+        assert isolate.creation_token is token
+        assert [command for command, _ in executions] == ['first', 'second']
+        assert all(passed_token is token for _, passed_token in executions)
+        assert cleaned == []
+        isolate.kill()
+        assert cleaned == [isolate]
+    finally:
+        del throng['token_aware_test_plugin']
+
+
 @pytest.mark.parametrize(
     ('name', 'factory'),
     [('local', local), ('temporary_directory', temporary_directory)],

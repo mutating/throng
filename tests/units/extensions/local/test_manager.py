@@ -4,7 +4,7 @@ from threading import Event
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
-from cantok import DefaultToken
+from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
@@ -51,6 +51,26 @@ def test_get_keeps_preparation_outside_isolate_constructor(tmp_path, monkeypatch
     assert prepare == expected_prepare
     read.assert_not_called()
     assert not manager.lock.locked()
+
+
+def test_get_passes_explicit_token_to_preparation_executor(tmp_path, monkeypatch):
+    """Use the caller's token for each setup command in a real local isolate."""
+    execute = Mock(return_value=SimpleRunResult(True))
+    monkeypatch.setattr('throng.extensions.local.isolate.run', execute)
+    commands = ['first', 'second']
+    manager = LocalManager(tmp_path, None, commands)
+    token = SimpleToken()
+
+    isolate = manager.get(b'ignored snapshot', token=token)
+    try:
+        assert isinstance(isolate, LocalIsolate)
+        assert execute.call_args_list == [
+            call(command, token=token, catch_output=True, catch_exceptions=True, directory=tmp_path)
+            for command in commands
+        ]
+        assert all(entry.kwargs['token'] is token for entry in execute.call_args_list)
+    finally:
+        isolate.kill()
 
 
 @pytest.mark.parametrize('failure', ['preparation', 'exception', 'interrupt'])

@@ -13,7 +13,7 @@ class LocalIsolate(AbstractIsolate):
         self.lock = lock
         self.path = path
 
-    def run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
+    def _run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
         with self.lock:
             return run(command, token=token, catch_output=True, catch_exceptions=True, directory=self.path)
 

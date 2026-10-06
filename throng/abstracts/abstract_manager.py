@@ -8,7 +8,10 @@ from printo import describe_call, not_none
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.results import RunResultProtocol
-from throng.errors import CannotCancelNonExistingIsolateError
+from throng.errors import (
+    CannotCancelNonExistingIsolateError,
+    PreparationCommandFailedError,
+)
 
 
 class ContextIsolateManager:
@@ -33,9 +36,10 @@ class ContextIsolateManager:
 class AbstractManager(ABC):
     path: Path
 
-    def __init__(self, path: Union[str, Path], exclude: Optional[List[str]] = None) -> None:
+    def __init__(self, path: Union[str, Path], exclude: Optional[List[str]] = None, prepare: Optional[List[str]] = None) -> None:
         self.path = Path(path) if isinstance(path, str) else path
         self.exclude = exclude
+        self.prepare = prepare
 
     def __repr__(self) -> str:
         return describe_call(type(self).__name__, [str(self.path)], {'exclude': self.exclude}, filters={'exclude': not_none})  # type: ignore[misc]
@@ -44,16 +48,30 @@ class AbstractManager(ABC):
     def scope(self) -> ContextIsolateManager:
         return ContextIsolateManager(self)
 
-    def run(self, command: str, token: AbstractToken = DefaultToken()) -> RunResultProtocol:  # noqa: B008
+    def run(self, command: str, token: AbstractToken = DefaultToken(), exception: Union[bool, BaseException, Type[BaseException]] = False) -> RunResultProtocol:  # noqa: B008
         with self.scope as runner:
-            return runner.run(command, token=token)
+            return runner.run(command, token=token, exception=exception)
 
-    def chain(self, *commands: str, token: AbstractToken = DefaultToken()) -> List[RunResultProtocol]:  # noqa: B008
+    def chain(self, *commands: str, token: AbstractToken = DefaultToken(), exception: Union[bool, BaseException, Type[BaseException]] = False) -> List[RunResultProtocol]:  # noqa: B008
         with self.scope as runner:
-            return runner.chain(*commands, token=token)
+            return runner.chain(*commands, token=token, exception=exception)
+
+    def get(self, state: bytes) -> AbstractIsolate:
+        isolate = self._get(state)
+
+        if self.prepare:
+            try:
+                isolate.chain(*(self.prepare), exception=True)
+            except BaseException as e:
+                isolate.kill()
+                if not isinstance(e, Exception):
+                    raise
+                raise PreparationCommandFailedError from e
+
+        return isolate
 
     @abstractmethod
-    def get(self, state: bytes) -> AbstractIsolate:
+    def _get(self, state: bytes) -> AbstractIsolate:
         ...  # pragma: no cover
 
     @abstractmethod

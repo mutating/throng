@@ -19,6 +19,11 @@ import pytest
         'mixed',
         'keyword_both',
         'exclude_only',
+        'prepare_only',
+        'positional_all',
+        'keyword_all',
+        'empty_prepare',
+        'none_prepare',
     ],
 )
 @pytest.mark.parametrize('as_string', [False, True])
@@ -36,22 +41,35 @@ def test_factory_forwards_settings_and_result(
     source = Path('space here') / 'каталог'
     path = str(source) if as_string else source
     exclude = ['cache/', '*.tmp', '!keep.tmp']
+    prepare = ['first', 'second', 'first']
     forms = {
-        'default': ((), {}, '.', None),
-        'positional_path': ((path,), {}, path, None),
-        'keyword_path': ((), {'path': path}, path, None),
-        'positional_both': ((path, exclude), {}, path, exclude),
-        'mixed': ((path,), {'exclude': exclude}, path, exclude),
-        'keyword_both': ((), {'path': path, 'exclude': exclude}, path, exclude),
-        'exclude_only': ((), {'exclude': exclude}, '.', exclude),
+        'default': ((), {}, '.', None, None),
+        'positional_path': ((path,), {}, path, None, None),
+        'keyword_path': ((), {'path': path}, path, None, None),
+        'positional_both': ((path, exclude), {}, path, exclude, None),
+        'mixed': ((path,), {'exclude': exclude}, path, exclude, None),
+        'keyword_both': ((), {'path': path, 'exclude': exclude}, path, exclude, None),
+        'exclude_only': ((), {'exclude': exclude}, '.', exclude, None),
+        'prepare_only': ((), {'prepare': prepare}, '.', None, prepare),
+        'positional_all': ((path, exclude, prepare), {}, path, exclude, prepare),
+        'keyword_all': (
+            (),
+            {'path': path, 'exclude': exclude, 'prepare': prepare},
+            path,
+            exclude,
+            prepare,
+        ),
+        'empty_prepare': ((), {'prepare': []}, '.', None, []),
+        'none_prepare': ((), {'prepare': None}, '.', None, None),
     }
-    args, kwargs, expected_path, expected_exclude = forms[form]
+    args, kwargs, expected_path, expected_exclude, expected_prepare = forms[form]
     expected_exclude = None if expected_exclude is None else expected_exclude.copy()
+    expected_prepare = None if expected_prepare is None else expected_prepare.copy()
 
     result = getattr(plugins, name)(*args, **kwargs)
 
     assert result is constructor.return_value
-    constructor.assert_called_once_with(expected_path, expected_exclude)
+    constructor.assert_called_once_with(expected_path, expected_exclude, expected_prepare)
 
 
 @pytest.mark.parametrize(
@@ -59,16 +77,17 @@ def test_factory_forwards_settings_and_result(
     [('local', 'LocalManager'), ('temporary_directory', 'TemporaryDirectoryManager')],
 )
 @pytest.mark.parametrize('exclude', [None, [], ['*.tmp']])
-def test_factory_does_not_cache_managers(monkeypatch, name, constructor_name, exclude):
+@pytest.mark.parametrize('prepare', [None, [], ['first', 'second']])
+def test_factory_does_not_cache_managers(monkeypatch, name, constructor_name, exclude, prepare):
     """Preserve exclusion values while constructing a fresh manager on every call."""
     plugins = import_module('throng.extensions.plugins')
     first, second = Mock(), Mock()
     constructor = Mock(side_effect=[first, second])
     monkeypatch.setattr(plugins, constructor_name, constructor)
 
-    assert getattr(plugins, name)('.', exclude) is first
+    assert getattr(plugins, name)('.', exclude, prepare) is first
     assert getattr(plugins, name)('other') is second
-    assert constructor.call_args_list == [call('.', exclude), call('other', None)]
+    assert constructor.call_args_list == [call('.', exclude, prepare), call('other', None, None)]
 
 
 @pytest.mark.parametrize(
@@ -92,20 +111,18 @@ def test_factory_preserves_constructor_error(
         getattr(plugins, name)()
 
     assert caught.value is error
-    constructor.assert_called_once_with('.', None)
+    constructor.assert_called_once_with('.', None, None)
 
 
-@pytest.mark.parametrize(
-    ('name', 'constructor_name'),
-    [('local', 'LocalManager'), ('temporary_directory', 'TemporaryDirectoryManager')],
-)
+@pytest.mark.parametrize('name', ['local', 'temporary_directory'])
 @pytest.mark.parametrize('existing', [False, True])
+@pytest.mark.parametrize('prepare', [None, ['first', 'second']])
 def test_factory_creation_is_lazy(
     tmp_path,
     monkeypatch,
     name,
-    constructor_name,
     existing,
+    prepare,
 ):
     """Create builtin managers without reading files or allocating an isolate.
 
@@ -113,7 +130,10 @@ def test_factory_creation_is_lazy(
     Restore filesystem operations before checking the source or cleaning up the test.
     """
     plugins = import_module('throng.extensions.plugins')
-    manager_type = getattr(plugins, constructor_name)
+    manager_type = {
+        'local': plugins.LocalManager,
+        'temporary_directory': plugins.TemporaryDirectoryManager,
+    }[name]
     path = tmp_path if existing else tmp_path / 'missing'
     read, get = Mock(), Mock()
     monkeypatch.setattr(manager_type, 'read', read)
@@ -134,10 +154,11 @@ def test_factory_creation_is_lazy(
     with monkeypatch.context() as patcher:
         for operation, mock in operations.items():
             patcher.setattr(operation, mock)
-        manager = getattr(plugins, name)(path)
+        manager = getattr(plugins, name)(path, prepare=prepare)
 
     assert isinstance(manager, manager_type)
     assert manager.path == path
+    assert manager.prepare == prepare
     read.assert_not_called()
     get.assert_not_called()
     for mock in operations.values():

@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+from types import MethodType
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
@@ -5,11 +7,64 @@ from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.results import SimpleRunResult
-from throng.errors import NotSupportedCommandError
+from throng.errors import (
+    InterruptedChainError,
+    NotSuccessfulRunError,
+    NotSupportedCommandError,
+)
+
+
+@pytest.mark.parametrize('success', [False, True])
+@pytest.mark.parametrize('exception', [False, True, ValueError, ValueError('custom'), KeyboardInterrupt, KeyboardInterrupt('custom')])
+def test_run_uses_exception_mode_only_for_unsuccessful_result(success, exception):
+    """Return successful results unchanged and raise the requested error only on failure."""
+    isolate = Mock(spec=AbstractIsolate)
+    result = SimpleRunResult(success, 7, 'output', 'diagnostic')
+    isolate._run.return_value = result
+    token = SimpleToken()
+    should_raise = not success and exception is not False
+    error_type = (
+        NotSuccessfulRunError if exception is True
+        else type(exception) if isinstance(exception, BaseException)
+        else exception
+    )
+    expectation = pytest.raises(error_type) if should_raise else nullcontext()
+
+    with expectation as caught:
+        actual = AbstractIsolate.run(isolate, 'command', token=token, exception=exception)
+
+    assert isolate.mock_calls == [call._run('command', token=token)]
+    if should_raise:
+        if isinstance(exception, BaseException):
+            assert caught.value is exception
+        else:
+            assert 'command' in str(caught.value)
+            assert '7' in str(caught.value)
+        if exception is True:
+            assert caught.value.result is result
+    else:
+        assert actual is result
+
+
+@pytest.mark.parametrize('error_type', [OSError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('exception', [False, True, ValueError])
+def test_run_preserves_executor_exception(error_type, exception):
+    """Keep executor failures intact regardless of the unsuccessful-result policy."""
+    isolate = Mock(spec=AbstractIsolate)
+    original = error_type('executor failed')
+    isolate._run.side_effect = original
+
+    with pytest.raises(error_type) as caught:
+        AbstractIsolate.run(isolate, 'command', exception=exception)
+
+    assert caught.value is original
+    isolate._run.assert_called_once()
+    isolate.kill.assert_not_called()
 
 
 @pytest.mark.parametrize('token_kind', ['default', 'active', 'cancelled', 'unreadable'])
-def test_empty_chain_does_not_inspect_token(token_kind):
+@pytest.mark.parametrize('exception', [False, True, ValueError])
+def test_empty_chain_does_not_inspect_token(token_kind, exception):
     """Return a fresh empty list without execution or cancellation checks."""
     isolate = Mock(spec=AbstractIsolate)
     token = MagicMock()
@@ -21,8 +76,8 @@ def test_empty_chain_does_not_inspect_token(token_kind):
         'unreadable': {'token': token},
     }
 
-    first = AbstractIsolate.chain(isolate, **options[token_kind])
-    second = AbstractIsolate.chain(isolate, **options[token_kind])
+    first = AbstractIsolate.chain(isolate, exception=exception, **options[token_kind])
+    second = AbstractIsolate.chain(isolate, exception=exception, **options[token_kind])
 
     assert first == second == []
     assert first is not second
@@ -66,7 +121,7 @@ def test_chain_preserves_commands_results_and_token(commands, explicit_token):
     else:
         assert isinstance(passed_token, DefaultToken)
     assert isolate.mock_calls == [
-        call.run(command, token=passed_token) for command in commands
+        call.run(command, token=passed_token, exception=False) for command in commands
     ]
     assert len(results) == len(expected)
     assert all(actual is original for actual, original in zip(results, expected))
@@ -77,7 +132,7 @@ def test_chain_preserves_commands_results_and_token(commands, explicit_token):
 @pytest.mark.parametrize('failed_at', [0, 1, 2, 'all'])
 @pytest.mark.parametrize('returncode', [0, 1, -9, None])
 def test_chain_continues_after_unsuccessful_results(failed_at, returncode):
-    """Leave stopping decisions to cancellation rather than command success."""
+    """Continue after unsuccessful results when exception mode is disabled."""
     isolate = Mock(spec=AbstractIsolate)
     expected = [
         SimpleRunResult(success=failed_at not in (index, 'all'), returncode=returncode)
@@ -97,6 +152,149 @@ def test_chain_continues_after_unsuccessful_results(failed_at, returncode):
     ]
 
 
+@pytest.mark.parametrize('failed_at', [0, 1, 2])
+@pytest.mark.parametrize('exception', [True, ValueError, ValueError('custom')])
+def test_chain_stops_at_unsuccessful_result_in_exception_mode(failed_at, exception):
+    """Raise through the real run wrapper before executing any later command."""
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
+    commands = ['first', 'second', 'third']
+    results = [SimpleRunResult(index != failed_at, index) for index in range(3)]
+    isolate._run.side_effect = results
+    token = SimpleToken()
+    error_type = NotSuccessfulRunError if exception is True else ValueError
+
+    with pytest.raises(error_type) as caught:
+        AbstractIsolate.chain(isolate, *commands, token=token, exception=exception)
+
+    assert isolate.mock_calls == [
+        call._run(command, token=token) for command in commands[:failed_at + 1]
+    ]
+    if exception is True:
+        assert caught.value.result is results[failed_at]
+    elif isinstance(exception, BaseException):
+        assert caught.value is exception
+    else:
+        assert commands[failed_at] in str(caught.value)
+
+
+@pytest.mark.parametrize('completed', [0, 1, 2])
+@pytest.mark.parametrize('exception', [True, ValueError, ValueError('custom'), KeyboardInterrupt, KeyboardInterrupt('custom')])
+def test_chain_cancellation_raises_requested_exception(completed, exception):
+    """Stop at the first cancelled command with the requested exception type or instance."""
+    isolate = Mock(spec=AbstractIsolate)
+    token = SimpleToken(cancelled=completed == 0)
+    commands = ['first', 'second', 'third']
+
+    def execute(command, **_kwargs):
+        if command == commands[completed - 1]:
+            token.cancel()
+        return SimpleRunResult(True)
+
+    isolate.run.side_effect = execute
+    error_type = (
+        InterruptedChainError if exception is True
+        else type(exception) if isinstance(exception, BaseException)
+        else exception
+    )
+
+    with pytest.raises(error_type) as caught:
+        AbstractIsolate.chain(isolate, *commands, token=token, exception=exception)
+
+    assert isolate.mock_calls == [
+        call.run(command, token=token, exception=exception) for command in commands[:completed]
+    ]
+    if isinstance(exception, BaseException):
+        assert caught.value is exception
+    else:
+        assert commands[completed] in str(caught.value)
+
+
+@pytest.mark.parametrize('exception', [False, True, ValueError, ValueError('custom')])
+def test_cancellation_during_last_command_keeps_successful_chain_results(exception):
+    """Return all completed results when cancellation leaves no further commands to skip."""
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
+    token = SimpleToken()
+    commands = ['first', 'second', 'last']
+    expected = [SimpleRunResult(True, 0, command, '') for command in commands]
+
+    def execute(command, *, token):
+        if command == commands[-1]:
+            token.cancel()
+        return expected[commands.index(command)]
+
+    isolate._run.side_effect = execute
+
+    results = AbstractIsolate.chain(isolate, *commands, token=token, exception=exception)
+
+    assert not token
+    assert len(results) == len(expected)
+    assert all(actual is original for actual, original in zip(results, expected))
+    assert [
+        (result.success, result.returncode, result.stdout, result.stderr) for result in results
+    ] == [(True, 0, command, '') for command in commands]
+    assert isolate.mock_calls == [call._run(command, token=token) for command in commands]
+
+
+@pytest.mark.parametrize('method', ['run', 'chain'])
+@pytest.mark.parametrize('exception', [True, ValueError, ValueError('custom')])
+@pytest.mark.parametrize('explicit_false', [False, True])
+def test_exception_policy_does_not_leak_into_later_calls(method, exception, explicit_false):
+    """Return failures normally after an earlier call requested an exception."""
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    first = SimpleRunResult(False, 7, '', 'first failure')
+    second = SimpleRunResult(False, 9, '', 'second failure')
+    isolate._run.side_effect = [first, second]
+    error_type = NotSuccessfulRunError if exception is True else ValueError
+
+    with pytest.raises(error_type) as caught:
+        getattr(isolate, method)('first', exception=exception)
+    actual = getattr(isolate, method)('second', **({'exception': False} if explicit_false else {}))
+
+    assert actual is second if method == 'run' else actual[0] is second
+    assert [entry.args[0] for entry in isolate._run.call_args_list] == ['first', 'second']
+    if exception is True:
+        assert caught.value.result is first
+    elif isinstance(exception, BaseException):
+        assert caught.value is exception
+    isolate.kill.assert_not_called()
+
+
+@pytest.mark.parametrize('method', ['run', 'chain'])
+def test_successive_command_failures_keep_independent_diagnostics(method):
+    """Keep earlier exceptions tied to their own command and result after later failures."""
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    first = SimpleRunResult(False, 7, 'first output', 'first diagnostic')
+    second = SimpleRunResult(False, 9, 'second output', 'second diagnostic')
+    isolate._run.side_effect = [first, second]
+
+    with pytest.raises(NotSuccessfulRunError) as first_error:
+        getattr(isolate, method)('first command', exception=True)
+    first_message = str(first_error.value)
+    with pytest.raises(NotSuccessfulRunError) as second_error:
+        getattr(isolate, method)('second command', exception=True)
+
+    assert first_error.value is not second_error.value
+    assert first_error.value.result is first
+    assert second_error.value.result is second
+    assert str(first_error.value) == first_message
+    assert 'first command' in first_message
+    assert '7' in first_message
+    assert 'second command' in str(second_error.value)
+    assert '9' in str(second_error.value)
+    second.stderr = 'annotated diagnostic'
+    assert first_error.value.result.stderr == 'first diagnostic'
+    assert first_error.value.__context__ is None
+    assert second_error.value.__context__ is None
+    assert isolate._run.call_count == 2
+    isolate.kill.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ('command_count', 'completed'),
     [(1, 0), (4, 0), (4, 1), (4, 2), (4, 4)],
@@ -113,7 +311,8 @@ def test_chain_keeps_completed_results_when_cancelled(
     isolate = Mock(spec=AbstractIsolate)
     executed = []
 
-    def execute(_command, *, token):
+    def execute(_command, *, token, exception):
+        assert exception is False
         result = SimpleRunResult(success, 0 if success else 1)
         executed.append(result)
         if len(executed) == completed:
@@ -125,7 +324,7 @@ def test_chain_keeps_completed_results_when_cancelled(
     results = AbstractIsolate.chain(isolate, *commands, token=token)
 
     assert isolate.mock_calls == [
-        call.run(command, token=token) for command in commands[:completed]
+        call.run(command, token=token, exception=False) for command in commands[:completed]
     ]
     assert len(results) == len(commands)
     assert all(
@@ -192,7 +391,7 @@ def test_chain_stops_on_execution_exception(position, error_type):
 
     assert caught.value is error
     assert isolate.mock_calls == [
-        call.run(command, token=token) for command in commands[: position + 1]
+        call.run(command, token=token, exception=False) for command in commands[: position + 1]
     ]
 
 
@@ -223,6 +422,21 @@ def test_destructor_delegates_cleanup():
 
 def test_isolate_requires_concrete_operations():
     """Require plugins to implement execution, snapshots, cleanup and installation."""
-    assert AbstractIsolate.__abstractmethods__ == {'run', 'read', 'kill', 'install'}
+    assert AbstractIsolate.__abstractmethods__ == {'_run', 'read', 'kill', 'install'}
     with pytest.raises(TypeError, match='abstract'):
         AbstractIsolate()
+
+
+@pytest.mark.parametrize('explicit_init', [False, True])
+def test_isolate_subclasses_need_no_preparation_constructor(explicit_init):
+    """Construct isolates without preparation, including a no-argument super call."""
+    methods = {name: Mock() for name in ('_run', 'read', 'kill', 'install')}
+    if explicit_init:
+        methods['__init__'] = lambda self: super(type(self), self).__init__()
+    isolate_type = type('LegacyIsolate', (AbstractIsolate,), methods)
+
+    isolate = isolate_type()
+
+    methods['_run'].assert_not_called()
+    methods['kill'].assert_not_called()
+    isolate.kill()

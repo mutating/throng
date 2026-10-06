@@ -4,7 +4,7 @@ from throng.extensions.temporary_directory.read import read_directory
 
 
 class TemporaryDirectoryManager(AbstractManager):
-    def get(self, state: bytes) -> TemporaryDirectoryIsolate:
+    def _get(self, state: bytes) -> TemporaryDirectoryIsolate:
         return TemporaryDirectoryIsolate(state, self.exclude)
 
     def read(self) -> bytes:

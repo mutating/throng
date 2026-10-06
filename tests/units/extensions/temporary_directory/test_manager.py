@@ -1,9 +1,14 @@
 from contextlib import nullcontext
+from pathlib import Path
 from shutil import rmtree
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
+from cantok import DefaultToken
 
+from throng.abstracts.results import SimpleRunResult
+from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
+from throng.extensions.temporary_directory.isolate import TemporaryDirectoryIsolate
 from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
 
 
@@ -24,16 +29,21 @@ def test_read_delegates_source_settings(tmp_path, monkeypatch, exclude):
 
 @pytest.mark.parametrize('state', [b'', b'state', b'\x00\xff'])
 @pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
+@pytest.mark.parametrize('prepare', [None, [], ['first', 'second']])
+@pytest.mark.parametrize('operation', ['get', '_get'])
 def test_get_delegates_snapshot_without_reading_source(
-    tmp_path,
     monkeypatch,
     state,
     exclude,
+    prepare,
+    operation,
 ):
     """Restore the supplied opaque snapshot without rereading the source directory."""
     expected_exclude = None if exclude is None else exclude.copy()
-    manager = TemporaryDirectoryManager(tmp_path, exclude)
+    expected_prepare = None if prepare is None else prepare.copy()
+    manager = TemporaryDirectoryManager('unread source', exclude, prepare)
     constructor, read, read_source = Mock(), Mock(), Mock()
+    constructor.return_value.chain.return_value = [SimpleRunResult(True) for _ in prepare or []]
     monkeypatch.setattr(
         'throng.extensions.temporary_directory.manager.TemporaryDirectoryIsolate',
         constructor,
@@ -44,8 +54,13 @@ def test_get_delegates_snapshot_without_reading_source(
         read_source,
     )
 
-    assert manager.get(state) is constructor.return_value
+    assert getattr(manager, operation)(state) is constructor.return_value
     constructor.assert_called_once_with(state, expected_exclude)
+    if operation == 'get' and prepare:
+        constructor.return_value.chain.assert_called_once_with(*expected_prepare, exception=True)
+    else:
+        constructor.return_value.chain.assert_not_called()
+    assert prepare == expected_prepare
     read.assert_not_called()
     read_source.assert_not_called()
 
@@ -145,3 +160,132 @@ def test_scope_discards_copy_and_keeps_source(tmp_path, fail_body):
     assert not isolate.path.exists()
     assert (tmp_path / 'file').read_bytes() == b'original'
     assert not (tmp_path / 'new').exists()
+
+
+@pytest.mark.parametrize('prepare', [None, [], ['first'], ['first', 'second', 'first']])
+@pytest.mark.parametrize('exclude', [None, ['*.tmp']])
+def test_get_restores_state_before_preparation(tmp_path, monkeypatch, prepare, exclude):
+    """Restore the snapshot and initialize all resources before executing preparation."""
+    isolate = object.__new__(TemporaryDirectoryIsolate)
+    directory = Mock()
+    directory.name = str(tmp_path / 'allocated')
+    events = Mock()
+    events.allocate.return_value = directory
+    original_commands = None if prepare is None else prepare.copy()
+    manager = TemporaryDirectoryManager(tmp_path, exclude, prepare)
+    events.attach_mock(directory.cleanup, 'cleanup')
+
+    def restore(state):
+        assert state == b'snapshot'
+        assert isolate.directory is directory
+        assert isolate.path == Path(directory.name)
+        assert isolate.exclude == exclude
+        assert isolate.used is False
+        assert not isolate.lock.locked()
+
+    def execute(_command, **kwargs):
+        events.restore.assert_called_once_with(b'snapshot')
+        assert isolate.lock.locked()
+        assert isolate.used is False
+        assert kwargs['directory'] == Path(directory.name)
+        assert kwargs['catch_output'] is True
+        assert kwargs['catch_exceptions'] is True
+        assert isinstance(kwargs['token'], DefaultToken)
+        return SimpleRunResult(True)
+
+    events.restore.side_effect = restore
+    events.execute.side_effect = execute
+    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.TemporaryDirectory', events.allocate)
+    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', events.execute)
+    monkeypatch.setattr(isolate, 'set_state', events.restore)
+
+    def create(state, exclusions):
+        TemporaryDirectoryIsolate.__init__(isolate, state, exclusions)
+        return isolate
+
+    constructor = Mock(side_effect=create)
+    monkeypatch.setattr('throng.extensions.temporary_directory.manager.TemporaryDirectoryIsolate', constructor)
+    try:
+        assert manager.get(b'snapshot') is isolate
+        constructor.assert_called_once_with(b'snapshot', exclude)
+
+        expected = [call.allocate(), call.restore(b'snapshot')]
+        if prepare:
+            token = events.execute.call_args.kwargs['token']
+            expected += [
+                call.execute(command, token=token, catch_output=True, catch_exceptions=True, directory=Path(directory.name))
+                for command in original_commands
+            ]
+        assert events.mock_calls == expected
+        assert isolate.used is False
+        assert not isolate.lock.locked()
+        assert prepare == original_commands
+    finally:
+        isolate.kill()
+
+
+@pytest.mark.parametrize('failure', ['result', 'exception', 'interrupt', 'exit'])
+def test_failed_preparation_immediately_destroys_allocated_directory(tmp_path, monkeypatch, failure):
+    """Clean up before propagation even if the caller retains the isolate and traceback."""
+    isolate = object.__new__(TemporaryDirectoryIsolate)
+    directory = Mock()
+    directory.name = str(tmp_path / 'allocated')
+    events = Mock()
+    events.allocate.return_value = directory
+    events.attach_mock(directory.cleanup, 'cleanup')
+    error = {
+        'result': None,
+        'exception': OSError('executor failed'),
+        'interrupt': KeyboardInterrupt(),
+        'exit': SystemExit(3),
+    }[failure]
+
+    def execute(command, **_kwargs):
+        events.restore.assert_called_once_with(b'snapshot')
+        assert isolate.lock.locked()
+        if command == 'bad' and error is not None:
+            raise error
+        return SimpleRunResult(command != 'bad')
+
+    def cleanup():
+        assert isolate.lock.locked()
+        assert isolate.used is False
+
+    events.execute.side_effect = execute
+    events.cleanup.side_effect = cleanup
+    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.TemporaryDirectory', events.allocate)
+    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', events.execute)
+    monkeypatch.setattr(isolate, 'set_state', events.restore)
+
+    def create(state, exclusions):
+        TemporaryDirectoryIsolate.__init__(isolate, state, exclusions)
+        return isolate
+
+    constructor = Mock(side_effect=create)
+    monkeypatch.setattr('throng.extensions.temporary_directory.manager.TemporaryDirectoryIsolate', constructor)
+    manager = TemporaryDirectoryManager(tmp_path, prepare=['first', 'bad', 'last'])
+    expected_type = type(error) if failure in ('interrupt', 'exit') else PreparationCommandFailedError
+    try:
+        with pytest.raises(expected_type) as caught:
+            manager.get(b'snapshot')
+
+        constructor.assert_called_once_with(b'snapshot', None)
+
+        commands = ['first', 'bad']
+        token = events.execute.call_args.kwargs['token']
+        assert events.mock_calls == [call.allocate(), call.restore(b'snapshot')] + [
+            call.execute(command, token=token, catch_output=True, catch_exceptions=True, directory=Path(directory.name))
+            for command in commands
+        ] + [call.cleanup()]
+        assert isolate.used is True
+        assert not isolate.lock.locked()
+        assert caught.value.__traceback__ is not None
+        if failure in ('interrupt', 'exit'):
+            assert caught.value is error
+        elif failure == 'exception':
+            assert caught.value.__cause__ is error
+        else:
+            assert isinstance(caught.value.__cause__, NotSuccessfulRunError)
+            assert caught.value.__cause__.result.success is False
+    finally:
+        events.cleanup.side_effect = None

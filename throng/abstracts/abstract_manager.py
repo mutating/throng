@@ -56,12 +56,12 @@ class AbstractManager(ABC):
         with self.scope as runner:
             return runner.chain(*commands, token=token, exception=exception)
 
-    def get(self, state: bytes) -> AbstractIsolate:
-        isolate = self._get(state)
+    def get(self, state: bytes, token: AbstractToken = DefaultToken()) -> AbstractIsolate:  # noqa: B008
+        isolate = self._get(state, token=token)
 
         if self.prepare:
             try:
-                isolate.chain(*(self.prepare), exception=True)
+                isolate.chain(*(self.prepare), exception=True, token=token)
             except BaseException as e:
                 isolate.kill()
                 if not isinstance(e, Exception):
@@ -71,7 +71,7 @@ class AbstractManager(ABC):
         return isolate
 
     @abstractmethod
-    def _get(self, state: bytes) -> AbstractIsolate:
+    def _get(self, state: bytes, token: AbstractToken = DefaultToken()) -> AbstractIsolate:  # noqa: B008
         ...  # pragma: no cover
 
     @abstractmethod

@@ -2,6 +2,8 @@ from pathlib import Path
 from threading import Lock
 from typing import List, Optional, Union
 
+from cantok import AbstractToken, DefaultToken
+
 from throng import AbstractManager
 from throng.extensions.local.isolate import LocalIsolate
 
@@ -11,7 +13,7 @@ class LocalManager(AbstractManager):
         self.lock = Lock()
         super().__init__(path, exclude, prepare)
 
-    def _get(self, state: bytes) -> LocalIsolate:  # noqa: ARG002
+    def _get(self, state: bytes, token: AbstractToken = DefaultToken()) -> LocalIsolate:  # noqa: B008, ARG002
         return LocalIsolate(self.lock, self.path)
 
     def read(self) -> bytes:

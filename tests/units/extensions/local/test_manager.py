@@ -1,9 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, call
 
 import pytest
+from cantok import DefaultToken
 
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import PreparationCommandFailedError
@@ -28,24 +29,31 @@ def test_manager_keeps_source_settings(tmp_path, as_string, exclude, prepare):
 
 
 @pytest.mark.parametrize('prepare', [None, [], ['first', 'second', 'first']])
-def test_get_forwards_preparation_and_existing_resources(tmp_path, monkeypatch, prepare):
-    """Give the isolate its preparation, source path and the manager's shared lock."""
+@pytest.mark.parametrize('operation', ['get', '_get'])
+def test_get_keeps_preparation_outside_isolate_constructor(tmp_path, monkeypatch, prepare, operation):
+    """Pass resources to the constructor and prepare only through public get."""
     manager = LocalManager(tmp_path, None, prepare)
     expected_prepare = None if prepare is None else prepare.copy()
     constructor, read = Mock(), Mock()
+    constructor.return_value.chain.return_value = [SimpleRunResult(True) for _ in prepare or []]
     monkeypatch.setattr('throng.extensions.local.manager.LocalIsolate', constructor)
     monkeypatch.setattr(manager, 'read', read)
 
-    assert manager.get(b'ignored snapshot') is constructor.return_value
+    assert getattr(manager, operation)(b'ignored snapshot') is constructor.return_value
 
-    constructor.assert_called_once_with(manager.lock, tmp_path, expected_prepare)
+    constructor.assert_called_once_with(manager.lock, tmp_path)
+    if operation == 'get' and prepare:
+        constructor.return_value.chain.assert_called_once_with(*expected_prepare)
+    else:
+        constructor.return_value.chain.assert_not_called()
+    assert prepare == expected_prepare
     read.assert_not_called()
     assert not manager.lock.locked()
 
 
 @pytest.mark.parametrize('failure', ['preparation', 'exception', 'interrupt'])
 def test_get_preserves_constructor_failure(tmp_path, monkeypatch, failure):
-    """Do not wrap or retry a preparation failure from isolate creation."""
+    """Do not wrap or retry a failure from isolate creation."""
     manager = LocalManager(tmp_path, None, ['setup'])
     error = {
         'preparation': PreparationCommandFailedError('setup failed', [SimpleRunResult(False)]),
@@ -59,7 +67,7 @@ def test_get_preserves_constructor_failure(tmp_path, monkeypatch, failure):
         manager.get(b'ignored')
 
     assert caught.value is error
-    constructor.assert_called_once_with(manager.lock, tmp_path, ['setup'])
+    constructor.assert_called_once_with(manager.lock, tmp_path)
     assert not manager.lock.locked()
 
 
@@ -235,3 +243,84 @@ def test_different_managers_can_execute_together(tmp_path, monkeypatch, same_pat
         finally:
             release.set()
         assert all(future.result(timeout=5).success for future in futures)
+
+
+@pytest.mark.parametrize('prepare', [None, [], ['first'], ['first', 'second', 'first']])
+@pytest.mark.parametrize('default_path', [False, True])
+def test_get_prepares_with_initialized_path_and_lock(tmp_path, monkeypatch, prepare, default_path):
+    """Make execution resources available before the first preparation command."""
+    expected_path = Path() if default_path else tmp_path
+    manager = LocalManager(expected_path, None, prepare)
+    lock = manager.lock
+    original_commands = None if prepare is None else prepare.copy()
+
+    def execute(_command, **kwargs):
+        assert lock.locked()
+        assert kwargs['directory'] == expected_path
+        assert kwargs['catch_output'] is True
+        assert kwargs['catch_exceptions'] is True
+        assert isinstance(kwargs['token'], DefaultToken)
+        return SimpleRunResult(True)
+
+    run = Mock(side_effect=execute)
+    monkeypatch.setattr('throng.extensions.local.isolate.run', run)
+
+    isolate = manager.get(b'ignored')
+
+    assert isolate.lock is lock
+    assert isolate.path == expected_path
+    assert not lock.locked()
+    assert [entry.args[0] for entry in run.call_args_list] == (original_commands or [])
+    assert prepare == original_commands
+    isolate.kill()
+
+
+@pytest.mark.parametrize('failure', ['result', 'exception', 'interrupt', 'exit'])
+def test_failed_preparation_releases_lock_before_cleanup(tmp_path, monkeypatch, failure):
+    """Clean up a failed local isolate immediately, after releasing its execution lock."""
+    manager = LocalManager(tmp_path, None, ['first', 'bad', 'last'])
+    lock = manager.lock
+    isolate = LocalIsolate(lock, tmp_path)
+    constructor = Mock(return_value=isolate)
+    monkeypatch.setattr('throng.extensions.local.manager.LocalIsolate', constructor)
+    events = Mock()
+    error = {
+        'result': None,
+        'exception': OSError('executor failed'),
+        'interrupt': KeyboardInterrupt(),
+        'exit': SystemExit(3),
+    }[failure]
+
+    def execute(command, **_kwargs):
+        assert isolate.lock is lock
+        assert isolate.path == tmp_path
+        assert lock.locked()
+        if command == 'bad' and error is not None:
+            raise error
+        return SimpleRunResult(command != 'bad')
+
+    def cleanup():
+        assert not lock.locked()
+
+    events.execute.side_effect = execute
+    events.kill.side_effect = cleanup
+    monkeypatch.setattr('throng.extensions.local.isolate.run', events.execute)
+    monkeypatch.setattr(isolate, 'kill', events.kill)
+    expected_type = type(error) if failure in ('interrupt', 'exit') else PreparationCommandFailedError
+
+    with pytest.raises(expected_type) as caught:
+        manager.get(b'ignored')
+
+    constructor.assert_called_once_with(lock, tmp_path)
+
+    commands = ['first', 'bad', 'last'] if failure == 'result' else ['first', 'bad']
+    token = events.execute.call_args.kwargs['token']
+    assert events.mock_calls == [
+        call.execute(command, token=token, catch_output=True, catch_exceptions=True, directory=tmp_path)
+        for command in commands
+    ] + [call.kill()]
+    assert not lock.locked()
+    if failure in ('interrupt', 'exit'):
+        assert caught.value is error
+    elif failure == 'exception':
+        assert caught.value.__cause__ is error

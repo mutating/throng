@@ -6,7 +6,7 @@ import pytest
 from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.results import SimpleRunResult
-from throng.errors import CannotInstallDependencyError, PreparationCommandFailedError
+from throng.errors import CannotInstallDependencyError
 from throng.extensions.local.isolate import LocalIsolate
 
 
@@ -25,81 +25,6 @@ def test_constructor_preserves_resources(tmp_path, path_kind):
     assert isolate.lock is lock
     assert isolate.path == options[path_kind].get('path', Path())
     assert list(tmp_path.iterdir()) == []
-
-
-@pytest.mark.parametrize('prepare', [None, [], ['first'], ['first', 'second', 'first']])
-@pytest.mark.parametrize('default_path', [False, True])
-def test_constructor_prepares_with_initialized_path_and_lock(tmp_path, monkeypatch, prepare, default_path):
-    """Make execution resources available before the first preparation command."""
-    lock = Lock()
-    expected_path = Path() if default_path else tmp_path
-    original_commands = None if prepare is None else prepare.copy()
-
-    def execute(_command, **kwargs):
-        assert lock.locked()
-        assert kwargs['directory'] == expected_path
-        assert kwargs['catch_output'] is True
-        assert kwargs['catch_exceptions'] is True
-        assert isinstance(kwargs['token'], DefaultToken)
-        return SimpleRunResult(True)
-
-    run = Mock(side_effect=execute)
-    monkeypatch.setattr('throng.extensions.local.isolate.run', run)
-
-    isolate = LocalIsolate(lock, prepare=prepare, **({} if default_path else {'path': tmp_path}))
-
-    assert isolate.lock is lock
-    assert isolate.path == expected_path
-    assert not lock.locked()
-    assert [entry.args[0] for entry in run.call_args_list] == (original_commands or [])
-    assert prepare == original_commands
-    isolate.kill()
-
-
-@pytest.mark.parametrize('failure', ['result', 'exception', 'interrupt', 'exit'])
-def test_failed_constructor_releases_lock_before_cleanup(tmp_path, monkeypatch, failure):
-    """Clean up a failed local isolate immediately, after releasing its execution lock."""
-    isolate = object.__new__(LocalIsolate)
-    lock = Lock()
-    events = Mock()
-    error = {
-        'result': None,
-        'exception': OSError('executor failed'),
-        'interrupt': KeyboardInterrupt(),
-        'exit': SystemExit(3),
-    }[failure]
-
-    def execute(command, **_kwargs):
-        assert isolate.lock is lock
-        assert isolate.path == tmp_path
-        assert lock.locked()
-        if command == 'bad' and error is not None:
-            raise error
-        return SimpleRunResult(command != 'bad')
-
-    def cleanup():
-        assert not lock.locked()
-
-    events.execute.side_effect = execute
-    events.kill.side_effect = cleanup
-    monkeypatch.setattr('throng.extensions.local.isolate.run', events.execute)
-    monkeypatch.setattr(isolate, 'kill', events.kill)
-    expected_type = type(error) if failure in ('interrupt', 'exit') else PreparationCommandFailedError
-
-    with pytest.raises(expected_type) as caught:
-        LocalIsolate.__init__(isolate, lock, tmp_path, ['first', 'bad', 'last'])
-
-    commands = ['first', 'bad', 'last'] if failure == 'result' else ['first', 'bad']
-    token = events.execute.call_args.kwargs['token']
-    assert events.mock_calls == [
-        call.execute(command, token=token, catch_output=True, catch_exceptions=True, directory=tmp_path)
-        for command in commands
-    ] + [call.kill()]
-    assert not lock.locked()
-    if failure in ('interrupt', 'exit'):
-        assert caught.value is error
-    elif failure == 'exception':
-        assert caught.value.__cause__ is error
 
 
 @pytest.mark.parametrize(

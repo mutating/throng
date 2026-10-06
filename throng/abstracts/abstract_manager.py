@@ -53,8 +53,16 @@ class AbstractManager(ABC):
         with self.scope as runner:
             return runner.chain(*commands, token=token)
 
-    @abstractmethod
     def get(self, state: bytes) -> AbstractIsolate:
+        isolate = self._get(state)
+
+        if self.prepare:
+            isolate.chain(*(self.prepare))
+
+        return isolate
+
+    @abstractmethod
+    def _get(self, state: bytes) -> AbstractIsolate:
         ...  # pragma: no cover
 
     @abstractmethod

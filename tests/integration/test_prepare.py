@@ -1,6 +1,7 @@
 import shlex
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from importlib import import_module
 from pathlib import Path
 from shutil import rmtree
@@ -10,7 +11,7 @@ import pytest
 
 from throng import temporary_directory, throng
 from throng.abstracts.results import SimpleRunResult
-from throng.errors import PreparationCommandFailedError
+from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
 
 
 def run_python_command(source):
@@ -146,6 +147,100 @@ def test_prepare_runs_for_each_new_isolate(tmp_path, builtin_plugin_name, record
         first.kill()
 
 
+@pytest.mark.parametrize('execution', [('run', False), ('run', True), ('chain', False), ('chain', True)])
+@pytest.mark.parametrize('exception_mode', ['omitted', 'false', 'true', 'class', 'instance'])
+def test_prepared_builtin_execution_applies_exception_policy(
+    tmp_path, builtin_plugin_name, execution, exception_mode, recorded_executions,
+):
+    """Apply the failure policy to real commands after preparation and always release resources."""
+    method, success = execution
+    prepare = run_python_command(
+        "from pathlib import Path; p = Path('ready'); assert not p.exists(); p.write_text('prepared')",
+    )
+    check_prepared = "from pathlib import Path; assert Path('ready').read_text() == 'prepared'; "
+    first = run_python_command(check_prepared + "print('first')")
+    command = run_python_command(
+        check_prepared + "import sys; print('output'); print('diagnostic', file=sys.stderr); "
+        + f'raise SystemExit({0 if success else 7})',
+    )
+    last = run_python_command(check_prepared + "Path('last').write_text('executed')")
+    commands = [command] if method == 'run' else [first, command, last]
+    custom_error = ValueError('custom failure')
+    options = {
+        'omitted': {},
+        'false': {'exception': False},
+        'true': {'exception': True},
+        'class': {'exception': ValueError},
+        'instance': {'exception': custom_error},
+    }[exception_mode]
+    should_raise = not success and exception_mode not in ('omitted', 'false')
+    error_type = NotSuccessfulRunError if exception_mode == 'true' else ValueError
+    expectation = pytest.raises(error_type) if should_raise else nullcontext()
+    manager = throng(tmp_path, prepare=[prepare])[builtin_plugin_name]
+
+    with expectation as caught:
+        actual = getattr(manager, method)(*commands, **options)
+
+    expected_commands = commands[:-1] if should_raise and method == 'chain' else commands
+    assert [entry[0] for entry in recorded_executions] == [prepare, *expected_commands]
+    command_result = next(result for executed, _, result in recorded_executions if executed == command)
+    assert command_result.success is success
+    assert command_result.returncode == (0 if success else 7)
+    assert command_result.stdout == 'output\n'
+    assert command_result.stderr == 'diagnostic\n'
+    assert recorded_executions[0][2].success is True
+    if should_raise:
+        if exception_mode == 'true':
+            assert caught.value.result is command_result
+        elif exception_mode == 'instance':
+            assert caught.value is custom_error
+        else:
+            assert repr(command) in str(caught.value)
+            assert 'return code 7' in str(caught.value)
+    else:
+        results = [actual] if method == 'run' else actual
+        assert len(results) == len(commands)
+        assert all(
+            result is entry[2] for result, entry in zip(results, recorded_executions[1:])
+        )
+        if method == 'chain':
+            assert results[0].success is True
+            assert results[-1].success is True
+    directory = recorded_executions[0][1]
+    assert all(entry[1] == directory for entry in recorded_executions)
+    assert directory.exists() is (builtin_plugin_name == 'local')
+    assert (tmp_path / 'ready').exists() is (builtin_plugin_name == 'local')
+    assert (tmp_path / 'last').exists() is (
+        builtin_plugin_name == 'local' and method == 'chain' and not should_raise
+    )
+
+
+@pytest.mark.parametrize('method', ['run', 'chain'])
+@pytest.mark.parametrize('success', [False, True])
+def test_prepare_and_user_output_is_captured(tmp_path, builtin_plugin_name, method, success, capsys):
+    """Keep both preparation and user output off the caller's streams, including on failure."""
+    prepare = run_python_command(
+        "import sys; print('prepare output'); print('prepare diagnostic', file=sys.stderr)",
+    )
+    command = run_python_command(
+        "import sys; print('user output'); print('user diagnostic', file=sys.stderr); "
+        + f'raise SystemExit({0 if success else 7})',
+    )
+    manager = throng(tmp_path, prepare=[prepare])[builtin_plugin_name]
+    expectation = nullcontext() if success else pytest.raises(NotSuccessfulRunError)
+
+    with expectation as caught:
+        actual = getattr(manager, method)(command, exception=True)
+
+    if success:
+        result = actual if method == 'run' else actual[0]
+    else:
+        result = caught.value.result
+    assert result.stdout == 'user output\n'
+    assert result.stderr == 'user diagnostic\n'
+    assert capsys.readouterr() == ('', '')
+
+
 @pytest.mark.parametrize('blocked_command', ['first', 'last'])
 def test_get_waits_for_prepare_completion(
     tmp_path, monkeypatch, builtin_plugin_name, blocked_command,
@@ -201,7 +296,7 @@ def test_prepare_uses_supplied_snapshot(tmp_path, builtin_plugin_name):
 @pytest.mark.parametrize('failure', ['nonzero_exit', 'missing_executable'])
 @pytest.mark.parametrize('operation', ['get', 'scope', 'run', 'chain'])
 def test_failed_prepare_prevents_use(tmp_path, builtin_plugin_name, failure, operation, recorded_executions):
-    """Reject failed preparation and expose every command result in order."""
+    """Stop at failed preparation and retain its result without executing later commands."""
     failed = (
         run_python_command('raise SystemExit(17)')
         if failure == 'nonzero_exit'
@@ -221,15 +316,15 @@ def test_failed_prepare_prevents_use(tmp_path, builtin_plugin_name, failure, ope
     else:
         with expectation as caught:
             getattr(manager, operation)('must not execute')
-    assert [call[0] for call in recorded_executions] == [failed, after]
+    assert [call[0] for call in recorded_executions] == [failed]
     assert recorded_executions[0][2].success is False
     if failure == 'nonzero_exit':
         assert recorded_executions[0][2].returncode == 17
-    assert recorded_executions[1][2].success is True
-    assert len(caught.value.results) == 2
-    assert all(
-        result is call[2] for result, call in zip(caught.value.results, recorded_executions)
-    )
+    cause = caught.value.__cause__
+    assert isinstance(cause, NotSuccessfulRunError)
+    assert cause.result is recorded_executions[0][2]
+    assert caught.value.__suppress_context__ is True
+    assert not (recorded_executions[0][1] / 'continued').exists()
 
 
 @pytest.mark.parametrize('operation', ['get', 'scope', 'run', 'chain'])

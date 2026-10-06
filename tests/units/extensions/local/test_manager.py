@@ -7,7 +7,7 @@ import pytest
 from cantok import DefaultToken
 
 from throng.abstracts.results import SimpleRunResult
-from throng.errors import PreparationCommandFailedError
+from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
 from throng.extensions.local.isolate import LocalIsolate
 from throng.extensions.local.manager import LocalManager
 
@@ -43,7 +43,7 @@ def test_get_keeps_preparation_outside_isolate_constructor(tmp_path, monkeypatch
 
     constructor.assert_called_once_with(manager.lock, tmp_path)
     if operation == 'get' and prepare:
-        constructor.return_value.chain.assert_called_once_with(*expected_prepare)
+        constructor.return_value.chain.assert_called_once_with(*expected_prepare, exception=True)
     else:
         constructor.return_value.chain.assert_not_called()
     assert prepare == expected_prepare
@@ -56,7 +56,7 @@ def test_get_preserves_constructor_failure(tmp_path, monkeypatch, failure):
     """Do not wrap or retry a failure from isolate creation."""
     manager = LocalManager(tmp_path, None, ['setup'])
     error = {
-        'preparation': PreparationCommandFailedError('setup failed', [SimpleRunResult(False)]),
+        'preparation': PreparationCommandFailedError('setup failed'),
         'exception': OSError('creation failed'),
         'interrupt': KeyboardInterrupt(),
     }[failure]
@@ -313,7 +313,7 @@ def test_failed_preparation_releases_lock_before_cleanup(tmp_path, monkeypatch, 
 
     constructor.assert_called_once_with(lock, tmp_path)
 
-    commands = ['first', 'bad', 'last'] if failure == 'result' else ['first', 'bad']
+    commands = ['first', 'bad']
     token = events.execute.call_args.kwargs['token']
     assert events.mock_calls == [
         call.execute(command, token=token, catch_output=True, catch_exceptions=True, directory=tmp_path)
@@ -324,3 +324,6 @@ def test_failed_preparation_releases_lock_before_cleanup(tmp_path, monkeypatch, 
         assert caught.value is error
     elif failure == 'exception':
         assert caught.value.__cause__ is error
+    else:
+        assert isinstance(caught.value.__cause__, NotSuccessfulRunError)
+        assert caught.value.__cause__.result.success is False

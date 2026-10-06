@@ -7,7 +7,7 @@ import pytest
 from cantok import DefaultToken
 
 from throng.abstracts.results import SimpleRunResult
-from throng.errors import PreparationCommandFailedError
+from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
 from throng.extensions.temporary_directory.isolate import TemporaryDirectoryIsolate
 from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
 
@@ -57,7 +57,7 @@ def test_get_delegates_snapshot_without_reading_source(
     assert getattr(manager, operation)(state) is constructor.return_value
     constructor.assert_called_once_with(state, expected_exclude)
     if operation == 'get' and prepare:
-        constructor.return_value.chain.assert_called_once_with(*expected_prepare)
+        constructor.return_value.chain.assert_called_once_with(*expected_prepare, exception=True)
     else:
         constructor.return_value.chain.assert_not_called()
     assert prepare == expected_prepare
@@ -271,7 +271,7 @@ def test_failed_preparation_immediately_destroys_allocated_directory(tmp_path, m
 
         constructor.assert_called_once_with(b'snapshot', None)
 
-        commands = ['first', 'bad', 'last'] if failure == 'result' else ['first', 'bad']
+        commands = ['first', 'bad']
         token = events.execute.call_args.kwargs['token']
         assert events.mock_calls == [call.allocate(), call.restore(b'snapshot')] + [
             call.execute(command, token=token, catch_output=True, catch_exceptions=True, directory=Path(directory.name))
@@ -284,5 +284,8 @@ def test_failed_preparation_immediately_destroys_allocated_directory(tmp_path, m
             assert caught.value is error
         elif failure == 'exception':
             assert caught.value.__cause__ is error
+        else:
+            assert isinstance(caught.value.__cause__, NotSuccessfulRunError)
+            assert caught.value.__cause__.result.success is False
     finally:
         events.cleanup.side_effect = None

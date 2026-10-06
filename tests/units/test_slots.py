@@ -4,7 +4,10 @@ import pytest
 from cantok import SimpleToken
 
 from throng import local, temporary_directory, throng
+from throng.abstracts.abstract_isolate import AbstractIsolate
+from throng.abstracts.abstract_manager import AbstractManager
 from throng.abstracts.results import SimpleRunResult
+from throng.errors import NotSuccessfulRunError
 from throng.extensions.local.manager import LocalManager
 from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
 
@@ -68,6 +71,72 @@ def test_slot_provides_builtin_managers(tmp_path, monkeypatch, form):
 def test_slot_uses_throng_entrypoint_group():
     """Discover third-party implementations in the package's own entrypoint group."""
     assert throng.entrypoint_group == 'throng'
+
+
+@pytest.mark.parametrize('selection', ['all', 'by_name'])
+@pytest.mark.parametrize('setting', ['omitted', 'none', 'empty', 'commands'])
+def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection, setting):
+    """Prepare a registered plugin whose isolate constructor knows only its snapshot."""
+    executions = []
+    cleaned = []
+    options = {
+        'omitted': {},
+        'none': {'prepare': None},
+        'empty': {'prepare': []},
+        'commands': {'prepare': ['first', 'second', 'first', 'third']},
+    }[setting]
+
+    class PluginIsolate(AbstractIsolate):
+        def __init__(self, state):
+            self.state = state
+
+        def _run(self, command, token=None):
+            result = SimpleRunResult(command != 'fail', 7 if command == 'fail' else 0)
+            executions.append((command, token, result))
+            return result
+
+        def read(self):
+            return self.state
+
+        def kill(self):
+            cleaned.append(self)
+
+        def install(self, *_dependencies):
+            pass
+
+    class PluginManager(AbstractManager):
+        def _get(self, state):
+            return PluginIsolate(state)
+
+        def read(self):
+            return b'external snapshot'
+
+    @throng.plugin(unique=True)
+    def external_test_plugin(path='.', exclude=None, prepare=None):
+        return PluginManager(path, exclude, prepare)
+
+    try:
+        factory = throng if selection == 'all' else throng['external_test_plugin']
+        manager = factory(tmp_path, exclude=['*.tmp'], **options)['external_test_plugin']
+        assert isinstance(manager, PluginManager)
+        assert manager.path == tmp_path
+        assert manager.exclude == ['*.tmp']
+        with manager.scope as isolate:
+            assert isolate.read() == b'external snapshot'
+            assert [command for command, _, _ in executions] == (options.get('prepare') or [])
+            assert cleaned == []
+            token = SimpleToken()
+            result = isolate.run('work', token=token, exception=True)
+            assert result is executions[-1][2]
+            with pytest.raises(NotSuccessfulRunError) as caught:
+                isolate.chain('fail', 'unreachable', token=token, exception=True)
+            assert caught.value.result is executions[-1][2]
+            assert [command for command, _, _ in executions] == (options.get('prepare') or []) + ['work', 'fail']
+            assert all(passed_token is token for _, passed_token, _ in executions[-2:])
+            assert cleaned == []
+        assert cleaned == [isolate]
+    finally:
+        del throng['external_test_plugin']
 
 
 @pytest.mark.parametrize(

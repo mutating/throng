@@ -4,8 +4,11 @@ from throng.abstracts.results import SimpleRunResult
 from throng.errors import (
     CannotCancelNonExistingIsolateError,
     CannotInstallDependencyError,
+    InterruptedChainError,
+    NotSuccessfulRunError,
     NotSupportedCommandError,
     PreparationCommandFailedError,
+    ThrongError,
 )
 
 
@@ -14,6 +17,8 @@ from throng.errors import (
     [
         CannotCancelNonExistingIsolateError,
         CannotInstallDependencyError,
+        InterruptedChainError,
+        NotSuccessfulRunError,
         NotSupportedCommandError,
         PreparationCommandFailedError,
     ],
@@ -21,6 +26,7 @@ from throng.errors import (
 def test_library_errors_specialize_runtime_error(error_type):
     """Let callers handle throng failures specifically or as general runtime errors."""
     assert issubclass(error_type, RuntimeError)
+    assert issubclass(error_type, ThrongError)
     assert error_type is not RuntimeError
 
 
@@ -33,6 +39,9 @@ def test_library_errors_specialize_runtime_error(error_type):
         (CannotCancelNonExistingIsolateError, PreparationCommandFailedError),
         (CannotInstallDependencyError, PreparationCommandFailedError),
         (NotSupportedCommandError, PreparationCommandFailedError),
+        (NotSuccessfulRunError, PreparationCommandFailedError),
+        (InterruptedChainError, PreparationCommandFailedError),
+        (NotSuccessfulRunError, InterruptedChainError),
     ],
 )
 def test_library_errors_have_distinct_types(first, second):
@@ -40,20 +49,21 @@ def test_library_errors_have_distinct_types(first, second):
     assert first is not second
 
 
-@pytest.mark.parametrize('message', ['', 'preparation failed', '失敗\n詳細'])
+@pytest.mark.parametrize('message', ['', 'command failed', '失敗\n詳細'])
 @pytest.mark.parametrize('populated', [False, True])
 @pytest.mark.parametrize('keyword_arguments', [False, True])
-def test_preparation_error_keeps_message_and_original_results(message, populated, keyword_arguments):
-    """Retain caller diagnostics unchanged for positional and keyword construction."""
-    results = [SimpleRunResult(True, 0, 'ready', ''), SimpleRunResult(False, None, None, 'failed')] if populated else []
-    originals = tuple(results)
+def test_run_error_keeps_message_and_original_result(message, populated, keyword_arguments):
+    """Keep diagnostics and standard exception text for positional and keyword construction."""
+    result = SimpleRunResult(False, 7, 'output', 'diagnostic') if populated else SimpleRunResult(False)
+    original = (result.success, result.returncode, result.stdout, result.stderr)
 
     if keyword_arguments:
-        error = PreparationCommandFailedError(message=message, results=results)
+        error = NotSuccessfulRunError(message=message, result=result)
     else:
-        error = PreparationCommandFailedError(message, results)
+        error = NotSuccessfulRunError(message, result)
 
     assert error.message == message
-    assert error.results is results
-    assert tuple(error.results) == originals
-    assert all(result is original for result, original in zip(error.results, originals))
+    assert str(error) == message
+    assert error.args == (message,)
+    assert error.result is result
+    assert (result.success, result.returncode, result.stdout, result.stderr) == original

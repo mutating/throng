@@ -13,6 +13,7 @@ from throng.abstracts.abstract_manager import AbstractManager, ContextIsolateMan
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import (
     CannotCancelNonExistingIsolateError,
+    NotSuccessfulRunError,
     NotSupportedCommandError,
     PreparationCommandFailedError,
 )
@@ -24,7 +25,6 @@ from throng.extensions.temporary_directory.manager import TemporaryDirectoryMana
 def test_absent_preparation_does_not_execute_or_destroy(form):
     """Keep an isolate alive without running commands when no preparation is needed."""
     isolate = Mock(spec=AbstractIsolate)
-    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
     options = {'omitted': {}, 'none': {'prepare': None}, 'empty': {'prepare': []}}
 
     manager = Mock(spec=AbstractManager)
@@ -50,14 +50,15 @@ def test_successful_preparation_preserves_commands_and_keeps_isolate_alive(comma
     manager = Mock(spec=AbstractManager, prepare=commands)
     manager._get.return_value = isolate
     isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
     results = [SimpleRunResult(True, returncode, command, 'diagnostic') for command in commands]
-    isolate.run.side_effect = results
+    isolate._run.side_effect = results
 
     assert AbstractManager.get(manager, b'snapshot') is isolate
 
-    token = isolate.run.call_args.kwargs['token']
+    token = isolate._run.call_args.kwargs['token']
     assert isinstance(token, DefaultToken)
-    assert isolate.mock_calls == [call.run(command, token=token) for command in original_commands]
+    assert isolate.mock_calls == [call._run(command, token=token) for command in original_commands]
     assert commands == original_commands
     assert [(result.success, result.returncode, result.stdout, result.stderr) for result in results] == [
         (True, returncode, command, 'diagnostic') for command in original_commands
@@ -71,6 +72,7 @@ def test_get_waits_until_preparation_has_finished(blocked_command):
     manager = Mock(spec=AbstractManager, prepare=['first', 'last'])
     manager._get.return_value = isolate
     isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
     entered, release = Event(), Event()
 
     def execute(command, **_kwargs):
@@ -79,7 +81,7 @@ def test_get_waits_until_preparation_has_finished(blocked_command):
             assert release.wait(5)
         return SimpleRunResult(True)
 
-    isolate.run.side_effect = execute
+    isolate._run.side_effect = execute
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(AbstractManager.get, manager, b'snapshot')
         try:
@@ -89,40 +91,46 @@ def test_get_waits_until_preparation_has_finished(blocked_command):
             release.set()
         assert future.result(timeout=5) is isolate
 
-    assert [entry.args[0] for entry in isolate.run.call_args_list] == ['first', 'last']
+    assert [entry.args[0] for entry in isolate._run.call_args_list] == ['first', 'last']
     isolate.kill.assert_not_called()
 
 
 @pytest.mark.parametrize('failed_at', [0, 1, 2, 'all'])
 @pytest.mark.parametrize('returncode', [0, 1, -9, None])
-def test_unsuccessful_preparation_finishes_chain_then_cleans_up(failed_at, returncode):
-    """Report the complete ordered results and clean up once before raising."""
+def test_unsuccessful_preparation_stops_chain_then_cleans_up(failed_at, returncode):
+    """Stop at the first failure, preserve its result and clean up before raising."""
     commands = ['first', 'second', 'third']
     isolate = Mock(spec=AbstractIsolate)
     manager = Mock(spec=AbstractManager, prepare=commands)
     manager._get.return_value = isolate
     isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
     results = [
         SimpleRunResult(failed_at not in (index, 'all'), returncode, f'out-{index}', f'err-{index}')
         for index in range(3)
     ]
-    isolate.run.side_effect = results
+    isolate._run.side_effect = results
 
     with pytest.raises(PreparationCommandFailedError) as caught:
         AbstractManager.get(manager, b'snapshot')
 
-    token = isolate.run.call_args.kwargs['token']
+    token = isolate._run.call_args.kwargs['token']
     assert isinstance(token, DefaultToken)
-    assert isolate.mock_calls == [call.run(command, token=token) for command in commands] + [call.kill()]
+    first_failure = 0 if failed_at == 'all' else failed_at
+    assert isolate.mock_calls == [
+        call._run(command, token=token) for command in commands[:first_failure + 1]
+    ] + [call.kill()]
     assert commands == ['first', 'second', 'third']
-    assert len(caught.value.results) == len(results)
-    assert all(actual is original for actual, original in zip(caught.value.results, results))
+    cause = caught.value.__cause__
+    assert isinstance(cause, NotSuccessfulRunError)
+    assert cause.result is results[first_failure]
+    assert commands[first_failure] in str(cause)
+    assert str(cause) == cause.message
+    assert caught.value.__suppress_context__ is True
     assert [(result.success, result.returncode, result.stdout, result.stderr) for result in results] == [
         (failed_at not in (index, 'all'), returncode, f'out-{index}', f'err-{index}')
         for index in range(3)
     ]
-    assert caught.value.message
-    assert caught.value.__cause__ is None
 
 
 @pytest.mark.parametrize('success', [False, True])
@@ -131,9 +139,11 @@ def test_preparation_uses_success_instead_of_result_truthiness(success):
     isolate = Mock(spec=AbstractIsolate)
     manager = Mock(spec=AbstractManager, prepare=['prepare'])
     manager._get.return_value = isolate
-    result = MagicMock(success=success)
+    result = MagicMock(success=success, returncode=None)
     result.__bool__.side_effect = AssertionError('Result truthiness must not be inspected.')
-    isolate.chain.return_value = [result]
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
+    isolate._run.return_value = result
 
     if success:
         assert AbstractManager.get(manager, b'snapshot') is isolate
@@ -141,7 +151,8 @@ def test_preparation_uses_success_instead_of_result_truthiness(success):
     else:
         with pytest.raises(PreparationCommandFailedError) as caught:
             AbstractManager.get(manager, b'snapshot')
-        assert caught.value.results[0] is result
+        assert isinstance(caught.value.__cause__, NotSuccessfulRunError)
+        assert caught.value.__cause__.result is result
         isolate.kill.assert_called_once_with()
     result.__bool__.assert_not_called()
 
@@ -155,20 +166,20 @@ def test_preparation_exception_stops_execution_and_preserves_cause(position, err
     manager = Mock(spec=AbstractManager, prepare=commands)
     manager._get.return_value = isolate
     isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
     original = error_type('execution failed')
-    isolate.run.side_effect = [SimpleRunResult(True)] * position + [original]
+    isolate._run.side_effect = [SimpleRunResult(True)] * position + [original]
 
     with pytest.raises(PreparationCommandFailedError) as caught:
         AbstractManager.get(manager, b'snapshot')
 
-    token = isolate.run.call_args.kwargs['token']
+    token = isolate._run.call_args.kwargs['token']
     assert isolate.mock_calls == [
-        call.run(command, token=token) for command in commands[:position + 1]
+        call._run(command, token=token) for command in commands[:position + 1]
     ] + [call.kill()]
     assert caught.value.__cause__ is original
     assert caught.value.__suppress_context__ is True
-    assert caught.value.results == []
-    assert caught.value.message
+    assert caught.value.__cause__.args == ('execution failed',)
     assert commands == ['first', 'second', 'third']
 
 
@@ -181,34 +192,37 @@ def test_preparation_interruption_cleans_up_and_keeps_original_exception(positio
     manager = Mock(spec=AbstractManager, prepare=commands)
     manager._get.return_value = isolate
     isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
     original = error_type('interrupted')
-    isolate.run.side_effect = [SimpleRunResult(True)] * position + [original]
+    isolate._run.side_effect = [SimpleRunResult(True)] * position + [original]
 
     with pytest.raises(error_type) as caught:
         AbstractManager.get(manager, b'snapshot')
 
-    token = isolate.run.call_args.kwargs['token']
+    token = isolate._run.call_args.kwargs['token']
     assert isolate.mock_calls == [
-        call.run(command, token=token) for command in commands[:position + 1]
+        call._run(command, token=token) for command in commands[:position + 1]
     ] + [call.kill()]
     assert caught.value is original
     assert caught.value.args == ('interrupted',)
     assert caught.value.__cause__ is None
 
 
-def test_custom_chain_results_are_preserved_without_reexecuting_commands():
-    """Allow plugins to override chain and keep their full result list on failure."""
+def test_custom_chain_failure_preserves_result_without_reexecuting_commands():
+    """Request exceptions from custom chains and preserve their failed result unchanged."""
     isolate = Mock(spec=AbstractIsolate)
     manager = Mock(spec=AbstractManager, prepare=['same', 'same'])
     manager._get.return_value = isolate
-    results = [Mock(success=True, extra=object()), Mock(success=False, extra=object())]
-    isolate.chain.return_value = results
+    result = Mock(success=False, extra=object())
+    original = NotSuccessfulRunError('plugin failed', result)
+    isolate.chain.side_effect = original
 
     with pytest.raises(PreparationCommandFailedError) as caught:
         AbstractManager.get(manager, b'snapshot')
 
-    assert caught.value.results is results
-    assert isolate.mock_calls == [call.chain('same', 'same'), call.kill()]
+    assert caught.value.__cause__ is original
+    assert caught.value.__cause__.result is result
+    assert isolate.mock_calls == [call.chain('same', 'same', exception=True), call.kill()]
 
 
 def test_custom_chain_exception_is_wrapped_with_its_original_diagnostics():
@@ -216,8 +230,9 @@ def test_custom_chain_exception_is_wrapped_with_its_original_diagnostics():
     isolate = Mock(spec=AbstractIsolate)
     manager = Mock(spec=AbstractManager, prepare=['prepare'])
     manager._get.return_value = isolate
-    results = [SimpleRunResult(False, 9, '', 'plugin diagnostic')]
-    original = PreparationCommandFailedError('plugin failed', results)
+    result = SimpleRunResult(False, 9, '', 'plugin diagnostic')
+    original = PreparationCommandFailedError('plugin failed')
+    original.__cause__ = NotSuccessfulRunError('executor failed', result)
     isolate.chain.side_effect = original
 
     with pytest.raises(PreparationCommandFailedError) as caught:
@@ -225,9 +240,9 @@ def test_custom_chain_exception_is_wrapped_with_its_original_diagnostics():
 
     assert caught.value is not original
     assert caught.value.__cause__ is original
-    assert original.results is results
-    assert original.message == 'plugin failed'
-    assert isolate.mock_calls == [call.chain('prepare'), call.kill()]
+    assert original.__cause__.result is result
+    assert str(original) == 'plugin failed'
+    assert isolate.mock_calls == [call.chain('prepare', exception=True), call.kill()]
 
 
 @pytest.mark.parametrize('failure', ['result', 'exception'])
@@ -237,9 +252,10 @@ def test_cleanup_errors_are_not_swallowed(failure):
     manager = Mock(spec=AbstractManager, prepare=['prepare'])
     manager._get.return_value = isolate
     isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
     original = RuntimeError('execution failed') if failure == 'exception' else None
-    isolate.run.side_effect = original
-    isolate.run.return_value = SimpleRunResult(False)
+    isolate._run.side_effect = original
+    isolate._run.return_value = SimpleRunResult(False)
     cleanup_error = OSError('cleanup failed')
     isolate.kill.side_effect = cleanup_error
 
@@ -247,40 +263,52 @@ def test_cleanup_errors_are_not_swallowed(failure):
         AbstractManager.get(manager, b'snapshot')
 
     assert caught.value is cleanup_error
-    assert caught.value.__context__ is original
-    isolate.run.assert_called_once()
+    if failure == 'exception':
+        assert caught.value.__context__ is original
+    else:
+        assert isinstance(caught.value.__context__, NotSuccessfulRunError)
+        assert caught.value.__context__.result is isolate._run.return_value
+    isolate._run.assert_called_once()
     isolate.kill.assert_called_once_with()
 
 
 @pytest.mark.parametrize('failure', ['result', 'exception'])
-def test_preparation_failures_do_not_share_results_with_other_isolates(failure):
-    """Keep diagnostic lists independent and allow a later isolate to prepare normally."""
+def test_preparation_failures_do_not_share_diagnostics_with_other_isolates(failure):
+    """Keep failure causes independent and allow the same manager to prepare a fresh isolate."""
     errors = []
+    manager = Mock(spec=AbstractManager, prepare=['prepare'])
     for _ in range(2):
         isolate = Mock(spec=AbstractIsolate)
-        manager = Mock(spec=AbstractManager, prepare=['prepare'])
         manager._get.return_value = isolate
         isolate.chain = MethodType(AbstractIsolate.chain, isolate)
-        isolate.run.return_value = SimpleRunResult(False)
+        isolate.run = MethodType(AbstractIsolate.run, isolate)
+        isolate._run.return_value = SimpleRunResult(False)
         if failure == 'exception':
-            isolate.run.side_effect = RuntimeError('execution failed')
+            isolate._run.side_effect = RuntimeError('execution failed')
         with pytest.raises(PreparationCommandFailedError) as caught:
             AbstractManager.get(manager, b'snapshot')
         errors.append(caught.value)
 
-    errors[0].results.append(SimpleRunResult(True))
-    assert len(errors[1].results) == (1 if failure == 'result' else 0)
+    assert errors[0] is not errors[1]
+    assert errors[0].__cause__ is not errors[1].__cause__
     if failure == 'result':
-        assert errors[0].results[0] is not errors[1].results[0]
+        assert isinstance(errors[0].__cause__, NotSuccessfulRunError)
+        assert isinstance(errors[1].__cause__, NotSuccessfulRunError)
+        errors[0].__cause__.result.stdout = 'annotated'
+        assert errors[1].__cause__.result.stdout is None
+    else:
+        errors[0].__cause__.args = ('annotated',)
+        assert errors[1].__cause__.args == ('execution failed',)
     fresh = Mock(spec=AbstractIsolate)
     fresh.chain = MethodType(AbstractIsolate.chain, fresh)
-    fresh.run.return_value = SimpleRunResult(True)
+    fresh.run = MethodType(AbstractIsolate.run, fresh)
+    fresh._run.return_value = SimpleRunResult(True)
 
     manager._get.return_value = fresh
 
     assert AbstractManager.get(manager, b'snapshot') is fresh
 
-    fresh.run.assert_called_once()
+    fresh._run.assert_called_once()
     fresh.kill.assert_not_called()
 
 
@@ -400,12 +428,15 @@ def test_scope_is_lazy_and_independent(monkeypatch, prepare):
 def test_failed_preparation_never_exposes_an_isolate(monkeypatch, operation, failure):
     """Propagate creation failures unchanged and leave cleanup to get."""
     manager = TemporaryDirectoryManager('.', prepare=['setup'])
-    results = [SimpleRunResult(False, 1, '', 'setup failed')]
+    result = SimpleRunResult(False, 1, '', 'setup failed')
+    cause = NotSuccessfulRunError('setup failed', result)
     error = {
-        'preparation': PreparationCommandFailedError('setup failed', results),
+        'preparation': PreparationCommandFailedError('setup failed'),
         'interrupt': KeyboardInterrupt(),
         'exit': SystemExit(2),
     }[failure]
+    if failure == 'preparation':
+        error.__cause__ = cause
     events = Mock()
     events.read.return_value = b'snapshot'
     events.get.side_effect = error
@@ -428,7 +459,8 @@ def test_failed_preparation_never_exposes_an_isolate(monkeypatch, operation, fai
     events.get.return_value.chain.assert_not_called()
     events.get.return_value.kill.assert_not_called()
     if failure == 'preparation':
-        assert caught.value.results is results
+        assert caught.value.__cause__ is cause
+        assert caught.value.__cause__.result is result
 
 
 @pytest.mark.parametrize('state', [b'', b'snapshot', b'\x00\xff'])
@@ -600,8 +632,120 @@ def test_closed_execution_delegates_and_cleans_up(
     assert events.mock_calls == [
         call.read(),
         call.get(b'\xffstate'),
-        getattr(call.isolate, method)(*commands, token=passed_token),
+        getattr(call.isolate, method)(*commands, token=passed_token, exception=False),
         call.isolate.kill(),
+    ]
+
+
+@pytest.mark.parametrize('method', ['run', 'chain'])
+@pytest.mark.parametrize('exception', [False, True, ValueError, ValueError('custom')])
+def test_closed_execution_forwards_exception_and_cleans_up(monkeypatch, method, exception):
+    """Apply the requested failure policy and release the isolate before returning or raising."""
+    manager = LocalManager('.', None)
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    result = SimpleRunResult(False, 7)
+    isolate._run.return_value = result
+    monkeypatch.setattr(manager, '_get', Mock(return_value=isolate))
+    token = SimpleToken()
+    error_type = NotSuccessfulRunError if exception is True else ValueError
+    expectation = nullcontext() if exception is False else pytest.raises(error_type)
+
+    with expectation as caught:
+        actual = getattr(manager, method)('command', token=token, exception=exception)
+
+    assert isolate.mock_calls == [call._run('command', token=token), call.kill()]
+    if exception is False:
+        assert actual is result if method == 'run' else actual[0] is result
+    elif exception is True:
+        assert caught.value.result is result
+    elif isinstance(exception, BaseException):
+        assert caught.value is exception
+
+
+@pytest.mark.parametrize('method', ['run', 'chain'])
+@pytest.mark.parametrize('stage', ['creation', 'preparation', 'command'])
+@pytest.mark.parametrize('exception', [False, True, ValueError, ValueError('custom')])
+def test_exception_policy_applies_only_to_user_commands(monkeypatch, method, stage, exception):
+    """Keep creation and preparation errors separate from the user-command failure policy."""
+    manager = LocalManager('.', None, prepare=['prepare'])
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    prepared = SimpleRunResult(stage != 'preparation', 17, '', 'preparation diagnostic')
+    failed = SimpleRunResult(False, 23, '', 'command diagnostic')
+    isolate._run.side_effect = [prepared, failed]
+    creation_error = OSError('cannot create isolate')
+    create = Mock(return_value=isolate)
+    if stage == 'creation':
+        create.side_effect = creation_error
+    monkeypatch.setattr(manager, '_get', create)
+    token = SimpleToken()
+    error_type = {
+        'creation': OSError,
+        'preparation': PreparationCommandFailedError,
+        'command': NotSuccessfulRunError if exception is True else ValueError,
+    }[stage]
+    expectation = (
+        nullcontext() if stage == 'command' and exception is False
+        else pytest.raises(error_type)
+    )
+
+    with expectation as caught:
+        result = getattr(manager, method)('command', token=token, exception=exception)
+
+    create.assert_called_once_with(b'')
+    if stage == 'creation':
+        assert caught.value is creation_error
+        assert isolate.mock_calls == []
+        return
+
+    preparation_token = isolate._run.call_args_list[0].kwargs['token']
+    assert isinstance(preparation_token, DefaultToken)
+    expected_calls = [call._run('prepare', token=preparation_token)]
+    if stage == 'command':
+        expected_calls.append(call._run('command', token=token))
+    assert isolate.mock_calls == [*expected_calls, call.kill()]
+    if stage == 'preparation':
+        assert isinstance(caught.value.__cause__, NotSuccessfulRunError)
+        assert caught.value.__cause__.result is prepared
+    elif exception is False:
+        assert result is failed if method == 'run' else result[0] is failed
+    elif exception is True:
+        assert caught.value.result is failed
+    elif isinstance(exception, BaseException):
+        assert caught.value is exception
+    else:
+        assert 'command' in str(caught.value)
+        assert '23' in str(caught.value)
+
+
+@pytest.mark.parametrize('method', ['run', 'chain'])
+@pytest.mark.parametrize('error_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('exception', [False, True, ValueError])
+def test_user_command_interruption_is_preserved_after_cleanup(monkeypatch, method, error_type, exception):
+    """Clean up before propagating the exact control exception from a prepared isolate."""
+    manager = LocalManager('.', None, prepare=['prepare'])
+    isolate = Mock(spec=AbstractIsolate)
+    isolate.run = MethodType(AbstractIsolate.run, isolate)
+    isolate.chain = MethodType(AbstractIsolate.chain, isolate)
+    interruption = error_type('interrupted user command')
+    isolate._run.side_effect = [SimpleRunResult(True), interruption]
+    monkeypatch.setattr(manager, '_get', Mock(return_value=isolate))
+    token = SimpleToken()
+    commands = ['command'] if method == 'run' else ['command', 'unreachable']
+
+    with pytest.raises(error_type) as caught:
+        getattr(manager, method)(*commands, token=token, exception=exception)
+
+    assert caught.value is interruption
+    assert caught.value.__cause__ is None
+    preparation_token = isolate._run.call_args_list[0].kwargs['token']
+    assert isolate.mock_calls == [
+        call._run('prepare', token=preparation_token),
+        call._run('command', token=token),
+        call.kill(),
     ]
 
 
@@ -670,7 +814,7 @@ def test_closed_execution_errors_and_retry(monkeypatch, method, stage):
         passed_token = getattr(isolate, method).call_args.kwargs['token']
         expected_calls.extend(
             [
-                getattr(call.isolate, method)('command', token=passed_token),
+                getattr(call.isolate, method)('command', token=passed_token, exception=False),
                 call.isolate.kill(),
             ],
         )
@@ -688,7 +832,7 @@ def test_closed_execution_errors_and_retry(monkeypatch, method, stage):
     assert events.mock_calls == [
         call.read(),
         call.get(b'state'),
-        getattr(call.replacement, method)('retry', token=passed_token),
+        getattr(call.replacement, method)('retry', token=passed_token, exception=False),
         call.replacement.kill(),
     ]
 

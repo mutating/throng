@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from io import BytesIO
 from pathlib import Path
 from shutil import rmtree
+from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import DEFAULT, MagicMock, Mock, call
 
@@ -72,6 +73,37 @@ def test_constructor_accepts_supported_tar_formats(mode, module):
         isolate.directory.cleanup()
         if isolate.lock.locked():
             isolate.lock.release()
+
+
+@pytest.mark.parametrize(
+    'failure',
+    [b'', b'not an archive', OSError('restore failed'), KeyboardInterrupt(), SystemExit(2)],
+)
+def test_constructor_cleans_directory_if_snapshot_is_invalid(monkeypatch, failure):
+    """Remove the allocated directory before exposing a snapshot restoration error."""
+    allocated = []
+
+    def allocate():
+        directory = TemporaryDirectory()
+        allocated.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.TemporaryDirectory', allocate)
+    if isinstance(failure, BaseException):
+        monkeypatch.setattr(TemporaryDirectoryIsolate, 'set_state', Mock(side_effect=failure))
+    expected_error = type(failure) if isinstance(failure, BaseException) else tarfile.ReadError
+    try:
+        with pytest.raises(expected_error) as caught:
+            TemporaryDirectoryIsolate(failure if isinstance(failure, bytes) else b'state', None)
+        if isinstance(failure, BaseException):
+            assert caught.value is failure
+        assert caught.value.__traceback__ is not None
+        assert len(allocated) == 1
+        assert not allocated[0].exists()
+    finally:
+        for path in allocated:
+            if path.exists():
+                rmtree(path)
 
 
 @pytest.mark.parametrize('change', ['add', 'replace', 'nested'])

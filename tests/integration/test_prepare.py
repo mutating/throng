@@ -8,10 +8,15 @@ from shutil import rmtree
 from threading import Event
 
 import pytest
+from cantok import SimpleToken
 
 from throng import temporary_directory, throng
 from throng.abstracts.results import SimpleRunResult
-from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
+from throng.errors import (
+    InterruptedChainError,
+    NotSuccessfulRunError,
+    PreparationCommandFailedError,
+)
 
 
 def run_python_command(source):
@@ -217,7 +222,7 @@ def test_prepared_builtin_execution_applies_exception_policy(
 
 @pytest.mark.parametrize('method', ['run', 'chain'])
 @pytest.mark.parametrize('success', [False, True])
-def test_prepare_and_user_output_is_captured(tmp_path, builtin_plugin_name, method, success, capsys):
+def test_prepare_and_user_output_is_captured(tmp_path, builtin_plugin_name, method, success, capfd):
     """Keep both preparation and user output off the caller's streams, including on failure."""
     prepare = run_python_command(
         "import sys; print('prepare output'); print('prepare diagnostic', file=sys.stderr)",
@@ -238,7 +243,33 @@ def test_prepare_and_user_output_is_captured(tmp_path, builtin_plugin_name, meth
         result = caught.value.result
     assert result.stdout == 'user output\n'
     assert result.stderr == 'user diagnostic\n'
-    assert capsys.readouterr() == ('', '')
+    assert capfd.readouterr() == ('', '')
+
+
+@pytest.mark.parametrize('exception', [True, ValueError, ValueError('custom')])
+def test_closed_chain_cancellation_happens_after_preparation(
+    tmp_path, builtin_plugin_name, recorded_executions, exception,
+):
+    """Finish preparation, then honor cancellation and release the closed isolate."""
+    prepare = run_python_command("from pathlib import Path; Path('ready').write_text('prepared')")
+    command = run_python_command("from pathlib import Path; Path('should_not_run').write_text('wrong')")
+    manager = throng(tmp_path, prepare=[prepare])[builtin_plugin_name]
+    token = SimpleToken(cancelled=True)
+    error_type = InterruptedChainError if exception is True else ValueError
+
+    with pytest.raises(error_type) as caught:
+        manager.chain(command, token=token, exception=exception)
+
+    if isinstance(exception, BaseException):
+        assert caught.value is exception
+    else:
+        assert repr(command) in str(caught.value)
+    assert [executed for executed, _, _ in recorded_executions] == [prepare]
+    assert recorded_executions[0][2].success is True
+    directory = recorded_executions[0][1]
+    assert directory.exists() is (builtin_plugin_name == 'local')
+    assert (tmp_path / 'ready').exists() is (builtin_plugin_name == 'local')
+    assert not (tmp_path / 'should_not_run').exists()
 
 
 @pytest.mark.parametrize('blocked_command', ['first', 'last'])

@@ -1,4 +1,9 @@
-from throng.errors import ThrongError
+from throng.errors import (
+    InterruptedChainError,
+    NotSuccessfulRunError,
+    PreparationCommandFailedError,
+    ThrongError,
+)
 from throng.extensions.temporary_directory.errors import DirectoryDoesNotExistError
 
 
@@ -8,6 +13,10 @@ def test_destroyed_directory_has_specific_error_type():
     assert issubclass(DirectoryDoesNotExistError, ThrongError)
     assert DirectoryDoesNotExistError is not ThrongError
     assert DirectoryDoesNotExistError is not Exception
+    assert not issubclass(
+        DirectoryDoesNotExistError,
+        (InterruptedChainError, NotSuccessfulRunError, PreparationCommandFailedError),
+    )
     assert (
         DirectoryDoesNotExistError.__module__
         == 'throng.extensions.temporary_directory.errors'

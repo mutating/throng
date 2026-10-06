@@ -47,6 +47,8 @@ def test_library_errors_specialize_runtime_error(error_type):
 def test_library_errors_have_distinct_types(first, second):
     """Keep failure types distinct so callers can handle each cause separately."""
     assert first is not second
+    assert not issubclass(first, second)
+    assert not issubclass(second, first)
 
 
 @pytest.mark.parametrize('message', ['', 'command failed', '失敗\n詳細'])

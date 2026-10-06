@@ -1,13 +1,13 @@
 from pathlib import Path
 
 import pytest
-from cantok import SimpleToken
+from cantok import DefaultToken, SimpleToken
 
 from throng import local, temporary_directory, throng
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.abstract_manager import AbstractManager
 from throng.abstracts.results import SimpleRunResult
-from throng.errors import NotSuccessfulRunError
+from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
 from throng.extensions.local.manager import LocalManager
 from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
 
@@ -74,8 +74,22 @@ def test_slot_uses_throng_entrypoint_group():
 
 
 @pytest.mark.parametrize('selection', ['all', 'by_name'])
-@pytest.mark.parametrize('setting', ['omitted', 'none', 'empty', 'commands'])
-def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection, setting):
+@pytest.mark.parametrize(
+    ('setting', 'operation'),
+    [
+        ('omitted', 'scope'),
+        ('none', 'scope'),
+        ('empty', 'scope'),
+        ('commands', 'scope'),
+        ('commands', 'run'),
+        ('commands', 'chain'),
+        ('failed', 'get'),
+        ('failed', 'scope'),
+        ('failed', 'run'),
+        ('failed', 'chain'),
+    ],
+)
+def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection, setting, operation):  # noqa: PLR0915
     """Prepare a registered plugin whose isolate constructor knows only its snapshot."""
     executions = []
     cleaned = []
@@ -84,6 +98,7 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
         'none': {'prepare': None},
         'empty': {'prepare': []},
         'commands': {'prepare': ['first', 'second', 'first', 'third']},
+        'failed': {'prepare': ['first', 'fail', 'unreachable']},
     }[setting]
 
     class PluginIsolate(AbstractIsolate):
@@ -121,6 +136,34 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
         assert isinstance(manager, PluginManager)
         assert manager.path == tmp_path
         assert manager.exclude == ['*.tmp']
+        if setting == 'failed':
+            expectation = pytest.raises(PreparationCommandFailedError)
+            if operation == 'get':
+                with expectation as caught:
+                    manager.get(manager.read())
+            elif operation == 'scope':
+                with expectation as caught, manager.scope:
+                    pytest.fail('Failed preparation must prevent context entry.')
+            else:
+                with expectation as caught:
+                    getattr(manager, operation)('work', exception=ValueError)
+            assert [command for command, _, _ in executions] == ['first', 'fail']
+            assert isinstance(caught.value.__cause__, NotSuccessfulRunError)
+            assert caught.value.__cause__.result is executions[-1][2]
+            assert len(cleaned) == 1
+            assert isinstance(cleaned[0], PluginIsolate)
+            assert cleaned[0].read() == b'external snapshot'
+            assert all(isinstance(token, DefaultToken) for _, token, _ in executions)
+            return
+
+        if operation in ('run', 'chain'):
+            actual = getattr(manager, operation)('work', exception=True)
+            result = actual if operation == 'run' else actual[0]
+            assert result is executions[-1][2]
+            assert [command for command, _, _ in executions] == options['prepare'] + ['work']
+            assert len(cleaned) == 1
+            return
+
         with manager.scope as isolate:
             assert isolate.read() == b'external snapshot'
             assert [command for command, _, _ in executions] == (options.get('prepare') or [])

@@ -21,7 +21,12 @@ class TemporaryDirectoryIsolate(AbstractIsolate):
         self.used = False
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name)
-        self.set_state(state)
+
+        try:
+            self.set_state(state)
+        except BaseException:
+            self.kill()
+            raise
 
     def _run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
         with self.lock:

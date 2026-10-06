@@ -11,8 +11,8 @@ class LocalManager(AbstractManager):
         self.lock = Lock()
         super().__init__(path, exclude, prepare)
 
-    def get(self, state: bytes) -> LocalIsolate:  # noqa: ARG002
-        return LocalIsolate(self.lock, self.path, self.prepare)
+    def _get(self, state: bytes) -> LocalIsolate:  # noqa: ARG002
+        return LocalIsolate(self.lock, self.path)
 
     def read(self) -> bytes:
         return b''

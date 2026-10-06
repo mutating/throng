@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import List, Optional
 
 from cantok import AbstractToken, DefaultToken
 from locklib import ContextLockProtocol
@@ -10,11 +9,9 @@ from throng.errors import CannotInstallDependencyError
 
 
 class LocalIsolate(AbstractIsolate):
-    def __init__(self, lock: ContextLockProtocol, path: Path = Path(), prepare: Optional[List[str]] = None) -> None:
+    def __init__(self, lock: ContextLockProtocol, path: Path = Path()) -> None:
         self.lock = lock
         self.path = path
-
-        super().__init__(prepare)
 
     def run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
         with self.lock:

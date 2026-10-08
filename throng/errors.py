@@ -37,6 +37,10 @@ class InterruptedInstallationError(ThrongError, RuntimeError):
     ...  # pragma: no cover
 
 
+class ArgumentsRedefinitionError(ThrongError, RuntimeError):
+    ...  # pragma: no cover
+
+
 class NotSuccessfulRunError(ThrongError, RuntimeError):
     def __init__(self, message: str, result: RunResultProtocol) -> None:
         super().__init__(message)

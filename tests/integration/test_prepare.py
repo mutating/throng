@@ -1,10 +1,11 @@
+import os
 import shlex
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from importlib import import_module
 from pathlib import Path
-from shutil import rmtree
+from shutil import rmtree, which
 from tempfile import TemporaryDirectory
 from threading import Event
 
@@ -14,7 +15,9 @@ from cantok import SimpleToken
 from throng import temporary_directory, throng
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import (
+    CannotInstallDependencyError,
     InterruptedChainError,
+    InterruptedInstallationError,
     NotSuccessfulRunError,
     PreparationCommandFailedError,
 )
@@ -37,6 +40,317 @@ def recorded_executions(monkeypatch, builtin_plugin_name):
 
     monkeypatch.setattr(module, 'run', execute)
     return calls
+
+
+def test_packages_run_before_prepare_for_every_builtin_isolate(
+    tmp_path, monkeypatch, builtin_plugin_name, request,
+):
+    """Install in each new isolate before setup and later user execution."""
+    calls = []
+    get_token = SimpleToken()
+    user_token = SimpleToken()
+    module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
+    allocated = []
+
+    if builtin_plugin_name == 'temporary_directory':
+        def allocate():
+            directory = TemporaryDirectory()
+            allocated.append(directory)
+            request.addfinalizer(directory.cleanup)
+            return directory
+
+        monkeypatch.setattr(module, 'TemporaryDirectory', allocate)
+
+    def execute(command, **kwargs):
+        calls.append((command, Path(kwargs['directory']), kwargs['token']))
+        return SimpleRunResult(True)
+
+    monkeypatch.setattr(module, 'run', execute)
+    packages = ['first', 'second']
+    manager = throng(tmp_path, prepare=['setup'], packages=packages)[builtin_plugin_name]
+    state = manager.read()
+    assert calls == []
+    paths = []
+
+    for _ in range(2):
+        isolate = manager.get(state, token=get_token)
+        try:
+            paths.append(isolate.path)
+            assert isolate.run('work', token=user_token).success
+        finally:
+            isolate.kill()
+
+    assert [command for command, _, _ in calls] == [
+        'pip install first', 'pip install second', 'setup', 'work',
+    ] * 2
+    for offset, path in ((0, paths[0]), (4, paths[1])):
+        assert all(directory == path for _, directory, _ in calls[offset:offset + 4])
+        assert all(passed is get_token for _, _, passed in calls[offset:offset + 3])
+        assert calls[offset + 3][2] is user_token
+    assert packages == ['first', 'second']
+    if builtin_plugin_name == 'local':
+        assert paths == [tmp_path, tmp_path]
+        assert not manager.lock.locked()
+    else:
+        assert len(allocated) == 2
+        assert paths == [Path(directory.name) for directory in allocated]
+        assert paths[0] != paths[1]
+        assert not any(path.exists() for path in paths)
+
+
+@pytest.mark.parametrize('operation', ['scope', 'run', 'chain'])
+def test_builtin_convenience_paths_install_packages_before_use(
+    tmp_path, monkeypatch, builtin_plugin_name, operation, request,
+):
+    """Install packages when isolates are opened through every public lifecycle path."""
+    calls = []
+    module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
+    allocated = []
+
+    if builtin_plugin_name == 'temporary_directory':
+        def allocate():
+            temporary = TemporaryDirectory()
+            allocated.append(temporary)
+            request.addfinalizer(temporary.cleanup)
+            return temporary
+
+        monkeypatch.setattr(module, 'TemporaryDirectory', allocate)
+
+    def execute(command, **kwargs):
+        calls.append((command, Path(kwargs['directory'])))
+        return SimpleRunResult(True)
+
+    monkeypatch.setattr(module, 'run', execute)
+    manager = throng(tmp_path, packages=['package'], prepare=['setup'])[builtin_plugin_name]
+
+    if operation == 'scope':
+        with manager.scope as isolate:
+            assert isolate.run('work').success
+    elif operation == 'run':
+        assert manager.run('work').success
+    else:
+        assert [result.success for result in manager.chain('work', 'more')] == [True, True]
+
+    expected = ['pip install package', 'setup', 'work']
+    if operation == 'chain':
+        expected.append('more')
+    assert [command for command, _ in calls] == expected
+    assert len({directory for _, directory in calls}) == 1
+    directory = calls[0][1]
+    if builtin_plugin_name == 'local':
+        assert directory == tmp_path
+        assert not manager.lock.locked()
+    else:
+        assert len(allocated) == 1
+        assert directory == Path(allocated[0].name)
+        assert not directory.exists()
+
+
+@pytest.mark.parametrize('operation', ['get', 'run'])
+def test_failed_prepare_after_successful_package_install_cleans_up(
+    tmp_path, monkeypatch, builtin_plugin_name, operation, request,
+):
+    """Keep preparation failure handling intact after installation has succeeded."""
+    commands = []
+    directories = []
+    failed_result = SimpleRunResult(False, 17, 'setup output', 'setup diagnostic')
+    module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
+    allocated = []
+
+    if builtin_plugin_name == 'temporary_directory':
+        def allocate():
+            directory = TemporaryDirectory()
+            allocated.append(directory)
+            request.addfinalizer(directory.cleanup)
+            return directory
+
+        monkeypatch.setattr(module, 'TemporaryDirectory', allocate)
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        directories.append(Path(kwargs['directory']))
+        return failed_result if command == 'fail setup' else SimpleRunResult(True)
+
+    monkeypatch.setattr(module, 'run', execute)
+    manager = throng(
+        tmp_path, packages=['package'], prepare=['fail setup', 'must not prepare'],
+    )[builtin_plugin_name]
+
+    def invoke():
+        if operation == 'get':
+            return manager.get(manager.read())
+        return manager.run('must not run')
+
+    with pytest.raises(PreparationCommandFailedError) as caught:
+        invoke()
+
+    assert commands == ['pip install package', 'fail setup']
+    cause = caught.value.__cause__
+    assert isinstance(cause, NotSuccessfulRunError)
+    assert cause.result is failed_result
+    assert failed_result.returncode == 17
+    assert failed_result.stderr == 'setup diagnostic'
+    if builtin_plugin_name == 'local':
+        assert directories == [tmp_path, tmp_path]
+        assert not manager.lock.locked()
+    else:
+        assert len(allocated) == 1
+        directory = Path(allocated[0].name)
+        assert directories == [directory, directory]
+        assert not directory.exists()
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Requires a POSIX executable pip shim')
+def test_builtin_packages_execute_real_process_before_prepare_with_snapshot(
+    tmp_path, monkeypatch, builtin_plugin_name,
+):
+    """Run a local pip shim through suby and let setup inspect its actual output."""
+    (tmp_path / 'seed').write_text('saved')
+    bin_path = tmp_path / 'bin'
+    bin_path.mkdir()
+    helper = bin_path / 'fake_pip.py'
+    helper.write_text(
+        'from pathlib import Path\n'
+        'import sys\n'
+        "assert sys.argv[1] == 'install'\n"
+        "with Path('installed').open('a') as marker:\n"
+        "    marker.write(sys.argv[2] + '\\n')\n",
+    )
+    fake_pip = bin_path / 'pip'
+    fake_pip.write_text(
+        '#!/bin/sh\n'
+        f'exec {shlex.quote(sys.executable)} {shlex.quote(str(helper))} "$@"\n',
+    )
+    fake_pip.chmod(0o755)
+    monkeypatch.setenv('PATH', str(bin_path))
+    assert which('pip') == str(fake_pip)
+    expected_seed = 'live' if builtin_plugin_name == 'local' else 'saved'
+    prepare = run_python_command(
+        "from pathlib import Path; "
+        "assert Path('installed').read_text() == 'first\\nsecond\\n'; "
+        f"assert Path('seed').read_text() == {expected_seed!r}; "
+        "Path('ready').write_text('prepared')",
+    )
+    manager = throng(tmp_path, packages=['first', 'second'], prepare=[prepare])[builtin_plugin_name]
+    state = manager.read()
+    (tmp_path / 'seed').write_text('live')
+
+    isolate = manager.get(state)
+    try:
+        assert (isolate.path / 'installed').read_text() == 'first\nsecond\n'
+        assert (isolate.path / 'ready').read_text() == 'prepared'
+        assert (isolate.path / 'seed').read_text() == expected_seed
+    finally:
+        isolate.kill()
+
+    assert (tmp_path / 'installed').exists() is (builtin_plugin_name == 'local')
+    assert (tmp_path / 'ready').exists() is (builtin_plugin_name == 'local')
+    if builtin_plugin_name == 'temporary_directory':
+        assert not isolate.path.exists()
+
+
+@pytest.mark.parametrize('failed_position', [0, 1])
+def test_failed_package_stops_builtin_setup_and_keeps_pip_diagnostics(
+    tmp_path, monkeypatch, builtin_plugin_name, failed_position, request,
+):
+    """Stop on the first failed pip result, retain it, and release the isolate."""
+    (tmp_path / 'seed').write_text('original')
+    commands = []
+    directories = []
+    token = SimpleToken()
+    failed_result = SimpleRunResult(False, 17, 'pip stdout', 'pip stderr')
+    module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
+    allocated = []
+
+    if builtin_plugin_name == 'temporary_directory':
+        def allocate():
+            directory = TemporaryDirectory()
+            allocated.append(directory)
+            request.addfinalizer(directory.cleanup)
+            return directory
+
+        monkeypatch.setattr(module, 'TemporaryDirectory', allocate)
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        directories.append(Path(kwargs['directory']))
+        assert kwargs['token'] is token
+        assert kwargs['catch_output'] is True
+        assert kwargs['catch_exceptions'] is True
+        return failed_result if len(commands) == failed_position + 1 else SimpleRunResult(True)
+
+    monkeypatch.setattr(module, 'run', execute)
+    manager = throng(tmp_path, prepare=['must not prepare'], packages=['first', 'second', 'third'])[builtin_plugin_name]
+
+    with pytest.raises(InterruptedInstallationError) as caught:
+        manager.get(manager.read(), token=token)
+
+    assert commands == ['pip install first', 'pip install second'][:failed_position + 1]
+    assert repr(['first', 'second'][failed_position]) in str(caught.value)
+    assert caught.value.__suppress_context__ is True
+    cause = caught.value.__cause__
+    assert isinstance(cause, CannotInstallDependencyError)
+    assert cause.result is failed_result
+    assert cause.result.returncode == 17
+    assert cause.result.stdout == 'pip stdout'
+    assert cause.result.stderr == 'pip stderr'
+    assert (tmp_path / 'seed').read_text() == 'original'
+    if builtin_plugin_name == 'local':
+        assert directories == [tmp_path] * len(commands)
+        assert not manager.lock.locked()
+    else:
+        assert len(allocated) == 1
+        path = Path(allocated[0].name)
+        assert directories == [path] * len(commands)
+        assert not path.exists()
+
+
+@pytest.mark.parametrize('completed_before_cancellation', [0, 1])
+def test_cancelled_package_installation_cleans_up_builtin_isolate(
+    tmp_path, monkeypatch, builtin_plugin_name, completed_before_cancellation, request,
+):
+    """Honor cancellation before pip or between packages, then clean up."""
+    token = SimpleToken(cancelled=completed_before_cancellation == 0)
+    commands = []
+    directories = []
+    module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
+    allocated = []
+
+    if builtin_plugin_name == 'temporary_directory':
+        def allocate():
+            directory = TemporaryDirectory()
+            allocated.append(directory)
+            request.addfinalizer(directory.cleanup)
+            return directory
+
+        monkeypatch.setattr(module, 'TemporaryDirectory', allocate)
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        directories.append(Path(kwargs['directory']))
+        assert kwargs['token'] is token
+        token.cancel()
+        return SimpleRunResult(True)
+
+    monkeypatch.setattr(module, 'run', execute)
+    manager = throng(tmp_path, prepare=['must not prepare'], packages=['first', 'second'])[builtin_plugin_name]
+
+    with pytest.raises(InterruptedInstallationError) as caught:
+        manager.get(manager.read(), token=token)
+
+    assert commands == (['pip install first'] if completed_before_cancellation else [])
+    skipped = 'second' if completed_before_cancellation else 'first'
+    assert repr(skipped) in str(caught.value)
+    assert isinstance(caught.value.__cause__, InterruptedInstallationError)
+    assert (tmp_path / 'must not prepare').exists() is False
+    if builtin_plugin_name == 'local':
+        assert directories == [tmp_path] * len(commands)
+        assert not manager.lock.locked()
+    else:
+        assert len(allocated) == 1
+        path = Path(allocated[0].name)
+        assert directories == [path] * len(commands)
+        assert not path.exists()
 
 
 @pytest.mark.parametrize('factory', ['slot', 'direct'])

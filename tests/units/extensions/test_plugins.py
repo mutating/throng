@@ -69,7 +69,35 @@ def test_factory_forwards_settings_and_result(
     result = getattr(plugins, name)(*args, **kwargs)
 
     assert result is constructor.return_value
-    constructor.assert_called_once_with(expected_path, expected_exclude, expected_prepare)
+    constructor.assert_called_once_with(expected_path, expected_exclude, expected_prepare, None)
+
+
+@pytest.mark.parametrize(
+    ('name', 'constructor_name'),
+    [('local', 'LocalManager'), ('temporary_directory', 'TemporaryDirectoryManager')],
+)
+@pytest.mark.parametrize('form', ['positional', 'keyword'])
+@pytest.mark.parametrize('packages', [None, [], ['first', 'second']])
+@pytest.mark.parametrize('configured', [False, True])
+def test_factory_forwards_packages(monkeypatch, name, constructor_name, form, packages, configured):  # noqa: PLR0913
+    """Forward the fourth setting unchanged for both supported call forms."""
+    plugins = import_module('throng.extensions.plugins')
+    constructor = Mock()
+    monkeypatch.setattr(plugins, constructor_name, constructor)
+    path = Path('source') if configured else '.'
+    exclude = ['*.tmp'] if configured else None
+    prepare = ['setup'] if configured else None
+
+    if form == 'positional':
+        result = getattr(plugins, name)(path, exclude, prepare, packages)
+    else:
+        result = getattr(plugins, name)(path=path, exclude=exclude, prepare=prepare, packages=packages)
+
+    assert result is constructor.return_value
+    constructor.assert_called_once_with(path, exclude, prepare, packages)
+    assert constructor.call_args.args[1] is exclude
+    assert constructor.call_args.args[2] is prepare
+    assert constructor.call_args.args[3] is packages
 
 
 @pytest.mark.parametrize(
@@ -87,7 +115,7 @@ def test_factory_does_not_cache_managers(monkeypatch, name, constructor_name, ex
 
     assert getattr(plugins, name)('.', exclude, prepare) is first
     assert getattr(plugins, name)('other') is second
-    assert constructor.call_args_list == [call('.', exclude, prepare), call('other', None, None)]
+    assert constructor.call_args_list == [call('.', exclude, prepare, None), call('other', None, None, None)]
 
 
 @pytest.mark.parametrize(
@@ -111,18 +139,24 @@ def test_factory_preserves_constructor_error(
         getattr(plugins, name)()
 
     assert caught.value is error
-    constructor.assert_called_once_with('.', None, None)
+    constructor.assert_called_once_with('.', None, None, None)
 
 
 @pytest.mark.parametrize('name', ['local', 'temporary_directory'])
 @pytest.mark.parametrize('existing', [False, True])
 @pytest.mark.parametrize('prepare', [None, ['first', 'second']])
-def test_factory_creation_is_lazy(
+@pytest.mark.parametrize(
+    ('package_setting', 'packages'),
+    [('omitted', None), ('none', None), ('empty', []), ('some', ['package'])],
+)
+def test_factory_creation_is_lazy(  # noqa: PLR0913
     tmp_path,
     monkeypatch,
     name,
     existing,
     prepare,
+    package_setting,
+    packages,
 ):
     """Create builtin managers without reading files or allocating an isolate.
 
@@ -135,9 +169,10 @@ def test_factory_creation_is_lazy(
         'temporary_directory': plugins.TemporaryDirectoryManager,
     }[name]
     path = tmp_path if existing else tmp_path / 'missing'
-    read, get = Mock(), Mock()
+    read, get, create = Mock(), Mock(), Mock()
     monkeypatch.setattr(manager_type, 'read', read)
     monkeypatch.setattr(manager_type, 'get', get)
+    monkeypatch.setattr(manager_type, '_get', create)
     operations = {
         operation: Mock(
             side_effect=AssertionError(f'Unexpected initialization I/O: {operation}'),
@@ -154,13 +189,18 @@ def test_factory_creation_is_lazy(
     with monkeypatch.context() as patcher:
         for operation, mock in operations.items():
             patcher.setattr(operation, mock)
-        manager = getattr(plugins, name)(path, prepare=prepare)
+        options = {'prepare': prepare}
+        if package_setting != 'omitted':
+            options['packages'] = packages
+        manager = getattr(plugins, name)(path, **options)
 
     assert isinstance(manager, manager_type)
     assert manager.path == path
     assert manager.prepare == prepare
+    assert manager.packages is packages
     read.assert_not_called()
     get.assert_not_called()
+    create.assert_not_called()
     for mock in operations.values():
         mock.assert_not_called()
     assert list(tmp_path.iterdir()) == []

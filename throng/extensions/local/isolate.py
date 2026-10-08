@@ -5,7 +5,7 @@ from locklib import ContextLockProtocol
 from suby import SubprocessResult, run
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
-from throng.errors import CannotInstallDependencyError
+from throng.errors import CannotInstallDependencyError, InterruptedInstallationError
 
 
 class LocalIsolate(AbstractIsolate):
@@ -23,8 +23,10 @@ class LocalIsolate(AbstractIsolate):
     def kill(self) -> None:
         pass
 
-    def install(self, *packages: str) -> None:
+    def install(self, *packages: str, token: AbstractToken = DefaultToken()) -> None:  # noqa: B008
         for package in packages:
-            install_result = self.run(f'pip install {package}')
+            if not token:
+                raise InterruptedInstallationError(f'The installation of package {package!r} has been cancelled.')
+            install_result = self.run(f'pip install {package}', token=token)
             if not install_result.success:
-                raise CannotInstallDependencyError
+                raise CannotInstallDependencyError(f'The installation of package {package!r} failed.', install_result)

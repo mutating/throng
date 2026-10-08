@@ -41,7 +41,7 @@ class AbstractIsolate(ABC):
         ...  # pragma: no cover
 
     @abstractmethod
-    def install(self, *packages: str) -> None:
+    def install(self, *packages: str, token: AbstractToken = DefaultToken()) -> None:  # noqa: B008
         ...  # pragma: no cover
 
     def chain(self, *commands: str, token: AbstractToken = DefaultToken(), exception: Union[bool, BaseException, Type[BaseException]] = False) -> List[RunResultProtocol]:  # noqa: B008

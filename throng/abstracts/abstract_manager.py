@@ -67,7 +67,7 @@ class AbstractManager(ABC):
             return runner.run(command, token=token, exception=exception)
 
     def chain(self, *commands: str, token: AbstractToken = DefaultToken(), exception: Union[bool, BaseException, Type[BaseException]] = False) -> List[RunResultProtocol]:  # noqa: B008
-        with self.scope as runner:
+        with self.scope(token=token) as runner:
             return runner.chain(*commands, token=token, exception=exception)
 
     def get(self, state: bytes, token: AbstractToken = DefaultToken()) -> AbstractIsolate:  # noqa: B008

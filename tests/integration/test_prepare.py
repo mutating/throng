@@ -1,16 +1,17 @@
 import os
 import shlex
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from importlib import import_module
 from pathlib import Path
 from shutil import rmtree, which
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, Thread
+from unittest.mock import Mock
 
 import pytest
-from cantok import SimpleToken
+from cantok import DefaultToken, SimpleToken
 
 from throng import temporary_directory, throng
 from throng.abstracts.results import SimpleRunResult
@@ -21,10 +22,26 @@ from throng.errors import (
     NotSuccessfulRunError,
     PreparationCommandFailedError,
 )
+from throng.extensions.temporary_directory.errors import DirectoryDoesNotExistError
 
 
 def run_python_command(source):
     return shlex.join([Path(sys.executable).as_posix(), '-c', source])
+
+
+def record_created_isolates(monkeypatch, manager):
+    """Retain isolates and record explicit cleanup before destructors can mask omissions."""
+    original = manager._get
+    created = []
+
+    def create(state, **kwargs):
+        isolate = original(state, **kwargs)
+        monkeypatch.setattr(isolate, 'kill', Mock(wraps=isolate.kill))
+        created.append((isolate, kwargs['token']))
+        return isolate
+
+    monkeypatch.setattr(manager, '_get', create)
+    return created
 
 
 @pytest.fixture
@@ -42,13 +59,14 @@ def recorded_executions(monkeypatch, builtin_plugin_name):
     return calls
 
 
+@pytest.mark.parametrize('operation', ['get', 'scope', 'run'])
 def test_packages_run_before_prepare_for_every_builtin_isolate(
-    tmp_path, monkeypatch, builtin_plugin_name, request,
+    tmp_path, monkeypatch, builtin_plugin_name, request, operation,
 ):
     """Install in each new isolate before setup and later user execution."""
     calls = []
     get_token = SimpleToken()
-    user_token = SimpleToken()
+    user_token = get_token if operation == 'run' else SimpleToken()
     module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
     allocated = []
 
@@ -68,18 +86,27 @@ def test_packages_run_before_prepare_for_every_builtin_isolate(
     monkeypatch.setattr(module, 'run', execute)
     packages = ['first', 'second']
     manager = throng(tmp_path, prepare=['setup'], packages=packages)[builtin_plugin_name]
+    created = record_created_isolates(monkeypatch, manager)
     state = manager.read()
-    assert calls == []
-    paths = []
 
     for _ in range(2):
-        isolate = manager.get(state, token=get_token)
-        try:
-            paths.append(isolate.path)
-            assert isolate.run('work', token=user_token).success
-        finally:
-            isolate.kill()
+        if operation == 'get':
+            isolate = manager.get(state, token=get_token)
+            try:
+                assert isolate.run('work', token=user_token).success
+            finally:
+                isolate.kill()
+        elif operation == 'scope':
+            with manager.scope(token=get_token) as isolate:
+                assert isolate.run('work', token=user_token).success
+        else:
+            assert manager.run('work', token=get_token).success
 
+    assert len(created) == 2
+    assert all(passed is get_token for _, passed in created)
+    for isolate, _ in created:
+        isolate.kill.assert_called_once_with()
+    paths = [isolate.path for isolate, _ in created]
     assert [command for command, _, _ in calls] == [
         'pip install first', 'pip install second', 'setup', 'work',
     ] * 2
@@ -96,6 +123,9 @@ def test_packages_run_before_prepare_for_every_builtin_isolate(
         assert paths == [Path(directory.name) for directory in allocated]
         assert paths[0] != paths[1]
         assert not any(path.exists() for path in paths)
+        for isolate, _ in created:
+            with pytest.raises(DirectoryDoesNotExistError):
+                isolate.run('must not run after cleanup')
 
 
 @pytest.mark.parametrize('operation', ['scope', 'run', 'chain'])
@@ -305,9 +335,10 @@ def test_failed_package_stops_builtin_setup_and_keeps_pip_diagnostics(
         assert not path.exists()
 
 
+@pytest.mark.parametrize('operation', ['get', 'scope', 'run'])
 @pytest.mark.parametrize('completed_before_cancellation', [0, 1])
-def test_cancelled_package_installation_cleans_up_builtin_isolate(
-    tmp_path, monkeypatch, builtin_plugin_name, completed_before_cancellation, request,
+def test_cancelled_package_installation_cleans_up_builtin_isolate(  # noqa: PLR0913
+    tmp_path, monkeypatch, builtin_plugin_name, completed_before_cancellation, request, operation,
 ):
     """Honor cancellation before pip or between packages, then clean up."""
     token = SimpleToken(cancelled=completed_before_cancellation == 0)
@@ -334,14 +365,28 @@ def test_cancelled_package_installation_cleans_up_builtin_isolate(
 
     monkeypatch.setattr(module, 'run', execute)
     manager = throng(tmp_path, prepare=['must not prepare'], packages=['first', 'second'])[builtin_plugin_name]
+    created = record_created_isolates(monkeypatch, manager)
+
+    def invoke():
+        if operation == 'get':
+            manager.get(manager.read(), token=token)
+        elif operation == 'scope':
+            with manager.scope(token=token):
+                pytest.fail('Cancelled installation must prevent context entry.')
+        else:
+            manager.run('must not run', token=token)
 
     with pytest.raises(InterruptedInstallationError) as caught:
-        manager.get(manager.read(), token=token)
+        invoke()
 
     assert commands == (['pip install first'] if completed_before_cancellation else [])
     skipped = 'second' if completed_before_cancellation else 'first'
     assert repr(skipped) in str(caught.value)
     assert isinstance(caught.value.__cause__, InterruptedInstallationError)
+    assert len(created) == 1
+    isolate, creation_token = created[0]
+    assert creation_token is token
+    isolate.kill.assert_called_once_with()
     assert (tmp_path / 'must not prepare').exists() is False
     if builtin_plugin_name == 'local':
         assert directories == [tmp_path] * len(commands)
@@ -587,9 +632,10 @@ def test_closed_chain_cancellation_happens_after_preparation(
     assert not (tmp_path / 'should_not_run').exists()
 
 
+@pytest.mark.parametrize('operation', ['get', 'scope', 'run'])
 @pytest.mark.parametrize('completed_before_cancellation', [0, 1])
-def test_get_cancellation_cleans_up_builtin_isolate(
-    tmp_path, monkeypatch, builtin_plugin_name, completed_before_cancellation,
+def test_preparation_cancellation_cleans_up_builtin_isolate(
+    tmp_path, monkeypatch, builtin_plugin_name, completed_before_cancellation, operation,
 ):
     """Stop setup under an explicit token and release a real isolate before raising."""
     (tmp_path / 'seed').write_text('original')
@@ -614,12 +660,26 @@ def test_get_cancellation_cleans_up_builtin_isolate(
     if builtin_plugin_name == 'temporary_directory':
         monkeypatch.setattr(module, 'TemporaryDirectory', allocate)
     manager = throng(tmp_path, prepare=['first', 'second'])[builtin_plugin_name]
+    created = record_created_isolates(monkeypatch, manager)
+
+    def invoke():
+        if operation == 'get':
+            manager.get(manager.read(), token=token)
+        elif operation == 'scope':
+            with manager.scope(token=token):
+                pytest.fail('Cancelled preparation must prevent context entry.')
+        else:
+            manager.run('must not run', token=token)
 
     try:
         with pytest.raises(PreparationCommandFailedError) as caught:
-            manager.get(manager.read(), token=token)
+            invoke()
 
         assert isinstance(caught.value.__cause__, InterruptedChainError)
+        assert len(created) == 1
+        isolate, creation_token = created[0]
+        assert creation_token is token
+        isolate.kill.assert_called_once_with()
         skipped_command = 'first' if completed_before_cancellation == 0 else 'second'
         assert repr(skipped_command) in str(caught.value.__cause__)
         assert [command for command, _ in executions] == (
@@ -636,6 +696,192 @@ def test_get_cancellation_cleans_up_builtin_isolate(
     finally:
         for directory in allocated:
             directory.cleanup()
+
+
+@pytest.mark.parametrize('operation', ['scope', 'run'])
+@pytest.mark.parametrize('stage', ['installation', 'preparation'])
+def test_cancellation_during_setup_command_prevents_use(  # noqa: PLR0915
+    tmp_path, monkeypatch, builtin_plugin_name, operation, stage,
+):
+    """Cancel while a setup command is executing and clean up before reporting its failure."""
+    token = SimpleToken()
+    entered, release = Event(), Event()
+    executions = []
+    blocked_command = 'pip install first' if stage == 'installation' else 'first'
+    interrupted = SimpleRunResult(False, -9)
+    packages = ['first', 'second'] if stage == 'installation' else None
+    manager = throng(tmp_path, packages=packages, prepare=['first', 'second'])[builtin_plugin_name]
+    created = record_created_isolates(monkeypatch, manager)
+
+    def execute(command, **kwargs):
+        assert command == blocked_command
+        assert kwargs['token'] is token
+        executions.append(command)
+        entered.set()
+        assert release.wait(5)
+        assert not kwargs['token']
+        return interrupted
+
+    monkeypatch.setattr(f'throng.extensions.{builtin_plugin_name}.isolate.run', execute)
+    future = Future()
+
+    def invoke():
+        try:
+            if operation == 'run':
+                manager.run('must not run', token=token)
+            else:
+                with manager.scope(token=token):
+                    pytest.fail('Interrupted setup must prevent context entry.')
+        except BaseException as error:  # noqa: BLE001
+            future.set_exception(error)
+        else:
+            future.set_result(None)
+
+    error_type = InterruptedInstallationError if stage == 'installation' else PreparationCommandFailedError
+    # A cleanup deadlock must fail by timeout instead of blocking executor shutdown.
+    worker = Thread(target=invoke, daemon=True)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert not future.done()
+        assert created[0][0].lock.locked()
+        created[0][0].kill.assert_not_called()
+        token.cancel()
+        release.set()
+        with pytest.raises(error_type) as caught:
+            future.result(timeout=5)
+    finally:
+        token.cancel()
+        release.set()
+        worker.join(timeout=5)
+
+    cause_type = CannotInstallDependencyError if stage == 'installation' else NotSuccessfulRunError
+    assert isinstance(caught.value.__cause__, cause_type)
+    assert caught.value.__cause__.result is interrupted
+    assert executions == [blocked_command]
+    assert len(created) == 1
+    isolate, creation_token = created[0]
+    assert creation_token is token
+    isolate.kill.assert_called_once_with()
+    assert not isolate.lock.locked()
+    if builtin_plugin_name == 'temporary_directory':
+        assert not isolate.path.exists()
+        with pytest.raises(DirectoryDoesNotExistError):
+            isolate.run('must not run after cleanup')
+
+
+@pytest.mark.parametrize('stage', ['installation', 'preparation'])
+def test_scope_observes_cancellation_after_configuration(
+    tmp_path, monkeypatch, builtin_plugin_name, stage,
+):
+    """Read the live token at entry even when it was active when the scope was configured."""
+    token = SimpleToken()
+    executions = []
+    packages = ['package'] if stage == 'installation' else None
+    manager = throng(tmp_path, packages=packages, prepare=['setup'])[builtin_plugin_name]
+    created = record_created_isolates(monkeypatch, manager)
+
+    def execute(command, **_kwargs):
+        executions.append(command)
+        return SimpleRunResult(True)
+
+    monkeypatch.setattr(f'throng.extensions.{builtin_plugin_name}.isolate.run', execute)
+    context = manager.scope(token)
+    assert created == []
+    assert executions == []
+    token.cancel()
+    error_type = InterruptedInstallationError if stage == 'installation' else PreparationCommandFailedError
+
+    with pytest.raises(error_type), context:
+        pytest.fail('Cancellation before entry must prevent use.')
+
+    assert executions == []
+    assert len(created) == 1
+    isolate, creation_token = created[0]
+    assert creation_token is token
+    assert context.isolate is None
+    isolate.kill.assert_called_once_with()
+    assert not isolate.lock.locked()
+    if builtin_plugin_name == 'temporary_directory':
+        assert not isolate.path.exists()
+
+
+@pytest.mark.parametrize('default_form', ['bare', 'called'])
+def test_configured_scopes_keep_tokens_independent(
+    tmp_path, monkeypatch, builtin_plugin_name, default_form,
+):
+    """Cancel one scope without affecting another scope or a later default scope."""
+    executions = []
+    first_token, second_token = SimpleToken(), SimpleToken()
+    manager = throng(tmp_path, prepare=['setup'])[builtin_plugin_name]
+    created = record_created_isolates(monkeypatch, manager)
+
+    def execute(command, **kwargs):
+        executions.append((command, kwargs['token']))
+        return SimpleRunResult(True)
+
+    monkeypatch.setattr(f'throng.extensions.{builtin_plugin_name}.isolate.run', execute)
+    first, second = manager.scope(first_token), manager.scope(second_token)
+    first_token.cancel()
+
+    with pytest.raises(PreparationCommandFailedError), first:
+        pytest.fail('The first scope was cancelled.')
+    assert executions == []
+
+    with second:
+        assert executions == [('setup', second_token)]
+        assert executions[0][1] is second_token
+    second_token.cancel()
+
+    fresh = manager.scope if default_form == 'bare' else manager.scope()
+    with fresh:
+        assert len(executions) == 2
+        assert executions[1][0] == 'setup'
+        assert isinstance(executions[1][1], DefaultToken)
+    assert len(created) == 3
+    assert created[0][1] is first_token
+    assert created[1][1] is second_token
+    assert created[2][1] is executions[1][1]
+    for isolate, _ in created:
+        isolate.kill.assert_called_once_with()
+        assert not isolate.lock.locked()
+        if builtin_plugin_name == 'temporary_directory':
+            assert not isolate.path.exists()
+
+
+@pytest.mark.parametrize('user_token_kind', ['explicit', 'default'])
+def test_scope_token_does_not_override_user_command_token(
+    tmp_path, monkeypatch, builtin_plugin_name, user_token_kind,
+):
+    """Use the scope token for setup and an independent token for commands in the body."""
+    scope_token, user_token = SimpleToken(), SimpleToken()
+    executions = []
+    manager = throng(tmp_path, packages=['package'], prepare=['setup'])[builtin_plugin_name]
+    created = record_created_isolates(monkeypatch, manager)
+
+    def execute(command, **kwargs):
+        executions.append((command, kwargs['token']))
+        return SimpleRunResult(bool(kwargs['token']))
+
+    monkeypatch.setattr(f'throng.extensions.{builtin_plugin_name}.isolate.run', execute)
+    with manager.scope(token=scope_token) as isolate:
+        assert [command for command, _ in executions] == ['pip install package', 'setup']
+        assert all(passed is scope_token for _, passed in executions)
+        scope_token.cancel()
+        options = {'token': user_token} if user_token_kind == 'explicit' else {}
+        assert isolate.run('work', **options).success
+        assert executions[-1][0] == 'work'
+        if user_token_kind == 'explicit':
+            assert executions[-1][1] is user_token
+        else:
+            assert isinstance(executions[-1][1], DefaultToken)
+
+    assert len(created) == 1
+    assert created[0][1] is scope_token
+    isolate.kill.assert_called_once_with()
+    assert not isolate.lock.locked()
+    if builtin_plugin_name == 'temporary_directory':
+        assert not isolate.path.exists()
 
 
 @pytest.mark.parametrize('blocked_command', ['first', 'last'])

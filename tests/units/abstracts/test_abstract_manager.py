@@ -764,7 +764,7 @@ def test_failed_preparation_never_exposes_an_isolate(monkeypatch, operation, fai
             getattr(manager, operation)('must not run')
 
     assert caught.value is error
-    creation_options = {'token': events.get.call_args.kwargs['token']} if operation == 'run' else {}
+    creation_options = {'token': events.get.call_args.kwargs['token']} if operation != 'scope' else {}
     assert events.mock_calls == [call.read(), call.get(b'snapshot', **creation_options)]
     events.get.return_value.run.assert_not_called()
     events.get.return_value.chain.assert_not_called()
@@ -931,13 +931,15 @@ def test_closed_execution_delegates_and_cleans_up(
     getattr(isolate, method).return_value = expected
     monkeypatch.setattr(manager, 'read', events.read)
     monkeypatch.setattr(manager, 'get', events.get)
-    token = SimpleToken(cancelled=token_kind == 'cancelled')
+    condition = Mock(return_value=False)
+    token = ConditionToken(condition, cancelled=token_kind == 'cancelled')
 
     actual = getattr(manager, method)(
         *commands,
         **({} if token_kind == 'default' else {'token': token}),
     )
 
+    condition.assert_not_called()
     passed_token = getattr(isolate, method).call_args.kwargs['token']
     if token_kind == 'default':
         assert isinstance(passed_token, DefaultToken)
@@ -948,7 +950,7 @@ def test_closed_execution_delegates_and_cleans_up(
         assert {name: getattr(result, name) for name in fields} == fields
     assert events.mock_calls == [
         call.read(),
-        call.get(b'\xffstate', **({'token': passed_token} if method == 'run' else {})),
+        call.get(b'\xffstate', token=passed_token),
         getattr(call.isolate, method)(*commands, token=passed_token, exception=False),
         call.isolate.kill(),
     ]
@@ -1014,10 +1016,7 @@ def test_exception_policy_applies_only_to_user_commands(monkeypatch, method, sta
 
     assert token
     creation_token = create.call_args.kwargs['token']
-    if method == 'run':
-        assert creation_token is token
-    else:
-        assert isinstance(creation_token, DefaultToken)
+    assert creation_token is token
     create.assert_called_once_with(b'', token=creation_token)
     if stage == 'creation':
         assert caught.value is creation_error
@@ -1132,8 +1131,9 @@ def test_closed_execution_errors_and_retry(monkeypatch, method, stage):
     assert caught.value is error
     expected_calls = [call.read()]
     if stage != 'read':
-        creation_options = {'token': events.get.call_args.kwargs['token']} if method == 'run' else {}
-        expected_calls.append(call.get(b'state', **creation_options))
+        creation_token = events.get.call_args.kwargs['token']
+        assert isinstance(creation_token, DefaultToken)
+        expected_calls.append(call.get(b'state', token=creation_token))
     if stage in ('execute', 'kill'):
         passed_token = getattr(isolate, method).call_args.kwargs['token']
         expected_calls.extend(
@@ -1155,7 +1155,7 @@ def test_closed_execution_errors_and_retry(monkeypatch, method, stage):
     passed_token = getattr(replacement, method).call_args.kwargs['token']
     assert events.mock_calls == [
         call.read(),
-        call.get(b'state', **({'token': passed_token} if method == 'run' else {})),
+        call.get(b'state', token=passed_token),
         getattr(call.replacement, method)('retry', token=passed_token, exception=False),
         call.replacement.kill(),
     ]
@@ -1186,8 +1186,8 @@ def test_closed_calls_read_fresh_state(monkeypatch, first_method, second_method)
     first_token = getattr(first, first_method).call_args.kwargs['token']
     second_token = getattr(second, second_method).call_args.kwargs['token']
     assert get.call_args_list == [
-        call(b'old', **({'token': first_token} if first_method == 'run' else {})),
-        call(b'new', **({'token': second_token} if second_method == 'run' else {})),
+        call(b'old', token=first_token),
+        call(b'new', token=second_token),
     ]
     first.kill.assert_called_once_with()
     second.kill.assert_called_once_with()

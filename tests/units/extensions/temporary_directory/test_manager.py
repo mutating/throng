@@ -4,7 +4,7 @@ from shutil import rmtree
 from unittest.mock import Mock, call
 
 import pytest
-from cantok import DefaultToken
+from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
@@ -57,12 +57,36 @@ def test_get_delegates_snapshot_without_reading_source(
     assert getattr(manager, operation)(state) is constructor.return_value
     constructor.assert_called_once_with(state, expected_exclude)
     if operation == 'get' and prepare:
-        constructor.return_value.chain.assert_called_once_with(*expected_prepare, exception=True)
+        token = constructor.return_value.chain.call_args.kwargs['token']
+        assert isinstance(token, DefaultToken)
+        constructor.return_value.chain.assert_called_once_with(*expected_prepare, exception=True, token=token)
     else:
         constructor.return_value.chain.assert_not_called()
     assert prepare == expected_prepare
     read.assert_not_called()
     read_source.assert_not_called()
+
+
+def test_get_passes_explicit_token_to_preparation_executor(tmp_path, monkeypatch):
+    """Use the caller's token for each setup command in a real copied isolate."""
+    execute = Mock(return_value=SimpleRunResult(True))
+    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', execute)
+    commands = ['first', 'second']
+    expected_commands = commands.copy()
+    manager = TemporaryDirectoryManager(tmp_path, prepare=commands)
+    token = SimpleToken()
+
+    isolate = manager.get(manager.read(), token=token)
+    try:
+        assert isinstance(isolate, TemporaryDirectoryIsolate)
+        assert execute.call_args_list == [
+            call(command, token=token, catch_output=True, catch_exceptions=True, directory=isolate.path)
+            for command in expected_commands
+        ]
+        assert all(entry.kwargs['token'] is token for entry in execute.call_args_list)
+        assert commands == expected_commands
+    finally:
+        isolate.kill()
 
 
 @pytest.mark.parametrize('operation', ['read', 'get'])

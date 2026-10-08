@@ -10,6 +10,7 @@ from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.results import RunResultProtocol
 from throng.errors import (
     CannotCancelNonExistingIsolateError,
+    InterruptedInstallationError,
     PreparationCommandFailedError,
 )
 
@@ -36,10 +37,11 @@ class ContextIsolateManager:
 class AbstractManager(ABC):
     path: Path
 
-    def __init__(self, path: Union[str, Path], exclude: Optional[List[str]] = None, prepare: Optional[List[str]] = None) -> None:
+    def __init__(self, path: Union[str, Path], exclude: Optional[List[str]] = None, prepare: Optional[List[str]] = None, packages: Optional[List[str]] = None) -> None:
         self.path = Path(path) if isinstance(path, str) else path
         self.exclude = exclude
         self.prepare = prepare
+        self.packages = packages
 
     def __repr__(self) -> str:
         return describe_call(type(self).__name__, [str(self.path)], {'exclude': self.exclude}, filters={'exclude': not_none})  # type: ignore[misc]
@@ -56,12 +58,21 @@ class AbstractManager(ABC):
         with self.scope as runner:
             return runner.chain(*commands, token=token, exception=exception)
 
-    def get(self, state: bytes) -> AbstractIsolate:
-        isolate = self._get(state)
+    def get(self, state: bytes, token: AbstractToken = DefaultToken()) -> AbstractIsolate:  # noqa: B008
+        isolate = self._get(state, token=token)
+
+        if self.packages:
+            try:
+                isolate.install(*(self.packages), token=token)
+            except BaseException as e:
+                isolate.kill()
+                if not isinstance(e, Exception):
+                    raise
+                raise InterruptedInstallationError(str(e)) from e
 
         if self.prepare:
             try:
-                isolate.chain(*(self.prepare), exception=True)
+                isolate.chain(*(self.prepare), exception=True, token=token)
             except BaseException as e:
                 isolate.kill()
                 if not isinstance(e, Exception):
@@ -71,7 +82,7 @@ class AbstractManager(ABC):
         return isolate
 
     @abstractmethod
-    def _get(self, state: bytes) -> AbstractIsolate:
+    def _get(self, state: bytes, token: AbstractToken = DefaultToken()) -> AbstractIsolate:  # noqa: B008
         ...  # pragma: no cover
 
     @abstractmethod

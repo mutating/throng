@@ -6,7 +6,7 @@ import pytest
 from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.results import SimpleRunResult
-from throng.errors import CannotInstallDependencyError
+from throng.errors import CannotInstallDependencyError, InterruptedInstallationError
 from throng.extensions.local.isolate import LocalIsolate
 
 
@@ -197,8 +197,12 @@ def test_install_preserves_package_order(
     monkeypatch.setattr(isolate, 'run', run)
 
     assert isolate.install(*packages) is None
+    token = run.call_args_list[0].kwargs['token'] if packages else None
+    if packages:
+        assert isinstance(token, DefaultToken)
+        assert all(entry.kwargs['token'] is token for entry in run.call_args_list)
     assert run.call_args_list == [
-        call(f'pip install {package}') for package in packages
+        call(f'pip install {package}', token=token) for package in packages
     ]
 
 
@@ -222,9 +226,37 @@ def test_install_stops_at_unsuccessful_result(
     with pytest.raises(CannotInstallDependencyError):
         isolate.install(*packages)
 
+    token = run.call_args_list[0].kwargs['token']
+    assert isinstance(token, DefaultToken)
+    assert all(entry.kwargs['token'] is token for entry in run.call_args_list)
     assert run.call_args_list == [
-        call(f'pip install {package}') for package in packages[: position + 1]
+        call(f'pip install {package}', token=token) for package in packages[: position + 1]
     ]
+
+
+@pytest.mark.parametrize('cancel_before_installation', [False, True])
+def test_install_stops_when_token_is_cancelled(tmp_path, monkeypatch, cancel_before_installation):
+    """Skip the first or next package as soon as the caller cancels installation."""
+    isolate = LocalIsolate(Lock(), tmp_path)
+    token = SimpleToken(cancelled=cancel_before_installation)
+    run = Mock(return_value=SimpleRunResult(True))
+    if not cancel_before_installation:
+        def cancel_after_first(*_args, **_kwargs):
+            token.cancel()
+            return SimpleRunResult(True)
+        run.side_effect = cancel_after_first
+    monkeypatch.setattr(isolate, 'run', run)
+
+    with pytest.raises(InterruptedInstallationError) as caught:
+        isolate.install('first', 'second', token=token)
+
+    skipped = 'first' if cancel_before_installation else 'second'
+    assert repr(skipped) in str(caught.value)
+    assert run.call_args_list == (
+        [] if cancel_before_installation else [call('pip install first', token=token)]
+    )
+    if not cancel_before_installation:
+        assert run.call_args.kwargs['token'] is token
 
 
 @pytest.mark.parametrize('position', [0, 1, 2])

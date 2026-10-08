@@ -1,4 +1,6 @@
 
+from typing import Optional
+
 from throng.abstracts.results import RunResultProtocol
 
 
@@ -15,7 +17,12 @@ class NotSupportedCommandError(ThrongError, RuntimeError):
 
 
 class CannotInstallDependencyError(ThrongError, RuntimeError):
-    ...  # pragma: no cover
+    def __init__(self, message: Optional[str] = None, result: Optional[RunResultProtocol] = None) -> None:
+        if message is None:
+            super().__init__()
+        else:
+            super().__init__(message)
+        self.result = result
 
 
 class PreparationCommandFailedError(ThrongError, RuntimeError):
@@ -23,6 +30,10 @@ class PreparationCommandFailedError(ThrongError, RuntimeError):
 
 
 class InterruptedChainError(ThrongError, RuntimeError):
+    ...  # pragma: no cover
+
+
+class InterruptedInstallationError(ThrongError, RuntimeError):
     ...  # pragma: no cover
 
 

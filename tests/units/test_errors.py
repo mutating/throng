@@ -5,6 +5,7 @@ from throng.errors import (
     CannotCancelNonExistingIsolateError,
     CannotInstallDependencyError,
     InterruptedChainError,
+    InterruptedInstallationError,
     NotSuccessfulRunError,
     NotSupportedCommandError,
     PreparationCommandFailedError,
@@ -18,6 +19,7 @@ from throng.errors import (
         CannotCancelNonExistingIsolateError,
         CannotInstallDependencyError,
         InterruptedChainError,
+        InterruptedInstallationError,
         NotSuccessfulRunError,
         NotSupportedCommandError,
         PreparationCommandFailedError,
@@ -42,6 +44,9 @@ def test_library_errors_specialize_runtime_error(error_type):
         (NotSuccessfulRunError, PreparationCommandFailedError),
         (InterruptedChainError, PreparationCommandFailedError),
         (NotSuccessfulRunError, InterruptedChainError),
+        (InterruptedInstallationError, CannotInstallDependencyError),
+        (InterruptedInstallationError, PreparationCommandFailedError),
+        (InterruptedInstallationError, InterruptedChainError),
     ],
 )
 def test_library_errors_have_distinct_types(first, second):
@@ -69,3 +74,24 @@ def test_run_error_keeps_message_and_original_result(message, populated, keyword
     assert error.args == (message,)
     assert error.result is result
     assert (result.success, result.returncode, result.stdout, result.stderr) == original
+
+
+@pytest.mark.parametrize('message', ['', 'package failed', 'details\nmore details'])
+@pytest.mark.parametrize('with_result', [False, True])
+def test_installation_error_keeps_message_and_failed_result(with_result, message):
+    """Expose pip diagnostics while retaining construction without a result."""
+    result = SimpleRunResult(False, 17, 'stdout', 'stderr')
+    error = CannotInstallDependencyError(message, result) if with_result else CannotInstallDependencyError(message)
+
+    assert str(error) == message
+    assert error.args == (message,)
+    assert error.result is (result if with_result else None)
+
+
+def test_installation_error_retains_zero_argument_construction():
+    """Keep the former RuntimeError constructor form available to callers."""
+    error = CannotInstallDependencyError()
+
+    assert error.args == ()
+    assert str(error) == ''
+    assert error.result is None

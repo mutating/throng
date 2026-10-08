@@ -1,4 +1,6 @@
+from inspect import signature
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from cantok import DefaultToken, SimpleToken
@@ -68,6 +70,49 @@ def test_slot_provides_builtin_managers(tmp_path, monkeypatch, form):
         assert managers[name].prepare == expected_prepare
 
 
+@pytest.mark.parametrize('form', ['positional', 'keyword'])
+@pytest.mark.parametrize(
+    ('setting', 'packages'),
+    [('omitted', None), ('none', None), ('empty', []), ('some', ['first', 'second'])],
+)
+@pytest.mark.parametrize('configured', [False, True])
+def test_slot_forwards_packages_lazily_to_builtin_managers(tmp_path, monkeypatch, form, setting, packages, configured):  # noqa: PLR0913
+    """Keep the package setting intact without installing during slot construction."""
+    local_install = Mock(side_effect=AssertionError('unexpected installation'))
+    temporary_install = Mock(side_effect=AssertionError('unexpected installation'))
+    monkeypatch.setattr('throng.extensions.local.isolate.LocalIsolate.install', local_install)
+    monkeypatch.setattr(
+        'throng.extensions.temporary_directory.isolate.TemporaryDirectoryIsolate.install',
+        temporary_install,
+    )
+    exclude = ['*.tmp'] if configured else None
+    prepare = ['setup'] if configured else None
+
+    if form == 'positional':
+        managers = (
+            throng(tmp_path, exclude, prepare)
+            if setting == 'omitted'
+            else throng(tmp_path, exclude, prepare, packages)
+        )
+    else:
+        options = {'exclude': exclude, 'prepare': prepare}
+        if setting != 'omitted':
+            options['packages'] = packages
+        managers = throng(tmp_path, **options)
+
+    for name in ('local', 'temporary_directory'):
+        assert managers[name].packages is packages
+        assert managers[name].exclude is exclude
+        assert managers[name].prepare is prepare
+    local_install.assert_not_called()
+    temporary_install.assert_not_called()
+
+
+def test_slot_exposes_optional_packages_default():
+    """Keep the public slot signature aligned with omitted package behavior."""
+    assert signature(throng).parameters['packages'].default is None
+
+
 def test_slot_uses_throng_entrypoint_group():
     """Discover third-party implementations in the package's own entrypoint group."""
     assert throng.entrypoint_group == 'throng'
@@ -120,7 +165,7 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
             pass
 
     class PluginManager(AbstractManager):
-        def _get(self, state):
+        def _get(self, state, token=DefaultToken()):  # noqa: B008, ARG002
             return PluginIsolate(state)
 
         def read(self):
@@ -180,6 +225,113 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
         assert cleaned == [isolate]
     finally:
         del throng['external_test_plugin']
+
+
+def test_external_plugin_uses_explicit_get_token_for_creation_and_preparation(tmp_path):
+    """Let a registered plugin consume the same token used by its setup commands."""
+    executions = []
+    cleaned = []
+
+    class TokenAwareIsolate(AbstractIsolate):
+        def __init__(self, state, creation_token):
+            self.state = state
+            self.creation_token = creation_token
+
+        def _run(self, command, token=DefaultToken()):  # noqa: B008
+            executions.append((command, token))
+            return SimpleRunResult(True)
+
+        def read(self):
+            return self.state
+
+        def kill(self):
+            cleaned.append(self)
+
+        def install(self, *_dependencies):
+            pass
+
+    class TokenAwareManager(AbstractManager):
+        def _get(self, state, token=DefaultToken()):  # noqa: B008
+            return TokenAwareIsolate(state, token)
+
+        def read(self):
+            return b'external snapshot'
+
+    @throng.plugin(unique=True)
+    def token_aware_test_plugin(path='.', exclude=None, prepare=None):
+        return TokenAwareManager(path, exclude, prepare)
+
+    try:
+        manager = throng['token_aware_test_plugin'](tmp_path, prepare=['first', 'second'])['token_aware_test_plugin']
+        token = SimpleToken()
+        isolate = manager.get(manager.read(), token=token)
+
+        assert isolate.read() == b'external snapshot'
+        assert isolate.creation_token is token
+        assert [command for command, _ in executions] == ['first', 'second']
+        assert all(passed_token is token for _, passed_token in executions)
+        assert cleaned == []
+        isolate.kill()
+        assert cleaned == [isolate]
+    finally:
+        del throng['token_aware_test_plugin']
+
+
+@pytest.mark.parametrize('selection', ['all', 'by_name'])
+def test_external_plugin_installs_slot_packages_before_preparation(tmp_path, selection):
+    """Apply the shared package setting to registered third-party managers."""
+    events = []
+    packages = ['first', 'second']
+
+    class PackageAwareIsolate(AbstractIsolate):
+        def __init__(self, state):
+            self.state = state
+
+        def _run(self, command, token=DefaultToken()):  # noqa: B008
+            events.append(('prepare', command, token))
+            return SimpleRunResult(True)
+
+        def read(self):
+            return self.state
+
+        def kill(self):
+            events.append(('kill', self))
+
+        def install(self, *requested, token=DefaultToken()):  # noqa: B008
+            events.append(('install', requested, token))
+
+    class PackageAwareManager(AbstractManager):
+        def _get(self, state, token=DefaultToken()):  # noqa: B008
+            events.append(('create', state, token))
+            return PackageAwareIsolate(state)
+
+        def read(self):
+            return b'external snapshot'
+
+    @throng.plugin(unique=True)
+    def package_aware_test_plugin(path='.', exclude=None, prepare=None, packages=None):
+        events.append(('factory', packages))
+        return PackageAwareManager(path, exclude, prepare, packages)
+
+    try:
+        factory = throng if selection == 'all' else throng['package_aware_test_plugin']
+        manager = factory(tmp_path, prepare=['setup'], packages=packages)['package_aware_test_plugin']
+        token = SimpleToken()
+        isolate = manager.get(manager.read(), token=token)
+
+        assert events == [
+            ('factory', packages),
+            ('create', b'external snapshot', token),
+            ('install', ('first', 'second'), token),
+            ('prepare', 'setup', token),
+        ]
+        assert manager.packages is packages
+        assert events[0][1] is packages
+        assert all(event[2] is token for event in events[1:])
+        isolate.kill()
+        assert events[-1] == ('kill', isolate)
+    finally:
+        del throng['package_aware_test_plugin']
 
 
 @pytest.mark.parametrize(

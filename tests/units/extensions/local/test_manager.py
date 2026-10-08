@@ -4,7 +4,7 @@ from threading import Event
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
-from cantok import DefaultToken
+from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
@@ -43,12 +43,36 @@ def test_get_keeps_preparation_outside_isolate_constructor(tmp_path, monkeypatch
 
     constructor.assert_called_once_with(manager.lock, tmp_path)
     if operation == 'get' and prepare:
-        constructor.return_value.chain.assert_called_once_with(*expected_prepare, exception=True)
+        token = constructor.return_value.chain.call_args.kwargs['token']
+        assert isinstance(token, DefaultToken)
+        constructor.return_value.chain.assert_called_once_with(*expected_prepare, exception=True, token=token)
     else:
         constructor.return_value.chain.assert_not_called()
     assert prepare == expected_prepare
     read.assert_not_called()
     assert not manager.lock.locked()
+
+
+def test_get_passes_explicit_token_to_preparation_executor(tmp_path, monkeypatch):
+    """Use the caller's token for each setup command in a real local isolate."""
+    execute = Mock(return_value=SimpleRunResult(True))
+    monkeypatch.setattr('throng.extensions.local.isolate.run', execute)
+    commands = ['first', 'second']
+    expected_commands = commands.copy()
+    manager = LocalManager(tmp_path, None, commands)
+    token = SimpleToken()
+
+    isolate = manager.get(b'ignored snapshot', token=token)
+    try:
+        assert isinstance(isolate, LocalIsolate)
+        assert execute.call_args_list == [
+            call(command, token=token, catch_output=True, catch_exceptions=True, directory=tmp_path)
+            for command in expected_commands
+        ]
+        assert all(entry.kwargs['token'] is token for entry in execute.call_args_list)
+        assert commands == expected_commands
+    finally:
+        isolate.kill()
 
 
 @pytest.mark.parametrize('failure', ['preparation', 'exception', 'interrupt'])

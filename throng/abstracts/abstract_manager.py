@@ -9,6 +9,7 @@ from printo import describe_call, not_none
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.results import RunResultProtocol
 from throng.errors import (
+    ArgumentsRedefinitionError,
     CannotCancelNonExistingIsolateError,
     InterruptedInstallationError,
     PreparationCommandFailedError,
@@ -18,14 +19,25 @@ from throng.errors import (
 class ContextIsolateManager:
     manager: 'AbstractManager'
     isolate: Optional[AbstractIsolate]
+    token: Optional[AbstractToken]
 
     def __init__(self, manager: 'AbstractManager') -> None:
         self.manager = manager
         self.isolate = None
+        self.token = None
+
+    def __call__(self, token: AbstractToken = DefaultToken()) -> 'ContextIsolateManager':  # noqa: B008
+        if self.token is not None:
+            raise ArgumentsRedefinitionError('The token was already defined earlier.')
+        self.token = token
+        return self
 
     def __enter__(self) -> AbstractIsolate:
         state = self.manager.read()
-        self.isolate = self.manager.get(state)
+        if self.token is None:
+            self.isolate = self.manager.get(state)
+        else:
+            self.isolate = self.manager.get(state, token=self.token)
         return self.isolate
 
     def __exit__(self, exc_type: Optional[Type[BaseException]], exc_value: Optional[BaseException], traceback: Optional[TracebackType]) -> None:
@@ -51,7 +63,7 @@ class AbstractManager(ABC):
         return ContextIsolateManager(self)
 
     def run(self, command: str, token: AbstractToken = DefaultToken(), exception: Union[bool, BaseException, Type[BaseException]] = False) -> RunResultProtocol:  # noqa: B008
-        with self.scope as runner:
+        with self.scope(token=token) as runner:
             return runner.run(command, token=token, exception=exception)
 
     def chain(self, *commands: str, token: AbstractToken = DefaultToken(), exception: Union[bool, BaseException, Type[BaseException]] = False) -> List[RunResultProtocol]:  # noqa: B008

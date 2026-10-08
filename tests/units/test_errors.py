@@ -2,6 +2,7 @@ import pytest
 
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import (
+    ArgumentsRedefinitionError,
     CannotCancelNonExistingIsolateError,
     CannotInstallDependencyError,
     InterruptedChainError,
@@ -16,6 +17,7 @@ from throng.errors import (
 @pytest.mark.parametrize(
     'error_type',
     [
+        ArgumentsRedefinitionError,
         CannotCancelNonExistingIsolateError,
         CannotInstallDependencyError,
         InterruptedChainError,
@@ -35,6 +37,13 @@ def test_library_errors_specialize_runtime_error(error_type):
 @pytest.mark.parametrize(
     ('first', 'second'),
     [
+        (ArgumentsRedefinitionError, CannotCancelNonExistingIsolateError),
+        (ArgumentsRedefinitionError, CannotInstallDependencyError),
+        (ArgumentsRedefinitionError, InterruptedChainError),
+        (ArgumentsRedefinitionError, InterruptedInstallationError),
+        (ArgumentsRedefinitionError, NotSuccessfulRunError),
+        (ArgumentsRedefinitionError, NotSupportedCommandError),
+        (ArgumentsRedefinitionError, PreparationCommandFailedError),
         (CannotCancelNonExistingIsolateError, CannotInstallDependencyError),
         (CannotCancelNonExistingIsolateError, NotSupportedCommandError),
         (CannotInstallDependencyError, NotSupportedCommandError),

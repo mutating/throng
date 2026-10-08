@@ -6,12 +6,13 @@ from types import MethodType
 from unittest.mock import MagicMock, Mock, call
 
 import pytest
-from cantok import DefaultToken, SimpleToken
+from cantok import ConditionToken, DefaultToken, SimpleToken
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.abstract_manager import AbstractManager, ContextIsolateManager
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import (
+    ArgumentsRedefinitionError,
     CannotCancelNonExistingIsolateError,
     CannotInstallDependencyError,
     InterruptedChainError,
@@ -659,6 +660,79 @@ def test_scope_is_lazy_and_independent(monkeypatch, prepare):
     get.assert_not_called()
 
 
+@pytest.mark.parametrize('form', ['default', 'positional', 'keyword'])
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_configured_scope_is_lazy_and_passes_token(monkeypatch, form, cancelled):
+    manager = LocalManager('.', None)
+    events = Mock()
+    events.read.return_value = b'snapshot'
+    monkeypatch.setattr(manager, 'read', events.read)
+    monkeypatch.setattr(manager, 'get', events.get)
+    condition = Mock(return_value=False)
+    token = ConditionToken(condition, cancelled=cancelled)
+    context = manager.scope
+    if form == 'default':
+        configured = context()
+    elif form == 'positional':
+        configured = context(token)
+    else:
+        configured = context(token=token)
+
+    assert configured is context
+    assert events.mock_calls == []
+    condition.assert_not_called()
+    with context as isolate:
+        passed_token = events.get.call_args.kwargs['token']
+        if form == 'default':
+            assert isinstance(passed_token, DefaultToken)
+        else:
+            assert passed_token is token
+        assert events.mock_calls == [call.read(), call.get(b'snapshot', token=passed_token)]
+        assert isolate is events.get.return_value
+    isolate.kill.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ('first_form', 'second_form', 'cancelled'),
+    [
+        ('default', 'other', False),
+        ('explicit', 'default', False),
+        ('explicit', 'default', True),
+        ('default', 'default', False),
+        ('explicit', 'same', False),
+        ('explicit', 'same', True),
+        ('explicit', 'other', False),
+        ('explicit', 'other', True),
+    ],
+)
+def test_scope_rejects_token_redefinition(first_form, second_form, cancelled):
+    manager = Mock()
+    token = SimpleToken(cancelled=cancelled)
+    context = ContextIsolateManager(manager)
+    if first_form == 'default':
+        context()
+        original_token = context.token
+        assert isinstance(original_token, DefaultToken)
+    else:
+        context(token)
+        original_token = token
+
+    if second_form == 'default':
+        options = {}
+    elif second_form == 'same':
+        options = {'token': token}
+    else:
+        options = {'token': SimpleToken()}
+
+    with pytest.raises(ArgumentsRedefinitionError):
+        context(**options)
+
+    assert manager.mock_calls == []
+    with context:
+        manager.get.assert_called_once_with(manager.read.return_value, token=original_token)
+        assert manager.get.call_args.kwargs['token'] is original_token
+
+
 @pytest.mark.parametrize('operation', ['scope', 'run', 'chain'])
 @pytest.mark.parametrize('failure', ['preparation', 'interrupt', 'exit'])
 def test_failed_preparation_never_exposes_an_isolate(monkeypatch, operation, failure):
@@ -690,7 +764,8 @@ def test_failed_preparation_never_exposes_an_isolate(monkeypatch, operation, fai
             getattr(manager, operation)('must not run')
 
     assert caught.value is error
-    assert events.mock_calls == [call.read(), call.get(b'snapshot')]
+    creation_options = {'token': events.get.call_args.kwargs['token']} if operation == 'run' else {}
+    assert events.mock_calls == [call.read(), call.get(b'snapshot', **creation_options)]
     events.get.return_value.run.assert_not_called()
     events.get.return_value.chain.assert_not_called()
     events.get.return_value.kill.assert_not_called()
@@ -737,16 +812,21 @@ def test_failed_context_entry_preserves_error(stage):
     [None, ValueError, KeyboardInterrupt, SystemExit],
 )
 @pytest.mark.parametrize('truthy_isolate', [False, True])
-def test_context_cleans_up_on_every_exit(error_type, truthy_isolate):
+@pytest.mark.parametrize('token_kind', ['omitted', 'active', 'cancelled'])
+def test_context_cleans_up_on_every_exit(error_type, truthy_isolate, token_kind):
     """Clean up even a false-valued isolate without suppressing body exceptions."""
     manager = Mock()
     isolate = MagicMock()
     isolate.__bool__.return_value = truthy_isolate
     manager.get.return_value = isolate
     error = error_type('body failed') if error_type else None
+    token = SimpleToken(cancelled=token_kind == 'cancelled')
+    context = ContextIsolateManager(manager)
+    if token_kind != 'omitted':
+        context(token)
 
     expectation = pytest.raises(error_type) if error_type else nullcontext()
-    with expectation as caught, ContextIsolateManager(manager) as actual:
+    with expectation as caught, context as actual:
         assert actual is isolate
         if error is not None:
             raise error
@@ -754,6 +834,7 @@ def test_context_cleans_up_on_every_exit(error_type, truthy_isolate):
     if error is not None:
         assert caught.value is error
     isolate.kill.assert_called_once_with()
+    assert bool(token) is (token_kind != 'cancelled')
 
 
 @pytest.mark.parametrize('failed_stage', [None, 'read', 'get'])
@@ -867,7 +948,7 @@ def test_closed_execution_delegates_and_cleans_up(
         assert {name: getattr(result, name) for name in fields} == fields
     assert events.mock_calls == [
         call.read(),
-        call.get(b'\xffstate'),
+        call.get(b'\xffstate', **({'token': passed_token} if method == 'run' else {})),
         getattr(call.isolate, method)(*commands, token=passed_token, exception=False),
         call.isolate.kill(),
     ]
@@ -931,8 +1012,12 @@ def test_exception_policy_applies_only_to_user_commands(monkeypatch, method, sta
     with expectation as caught:
         result = getattr(manager, method)('command', token=token, exception=exception)
 
+    assert token
     creation_token = create.call_args.kwargs['token']
-    assert isinstance(creation_token, DefaultToken)
+    if method == 'run':
+        assert creation_token is token
+    else:
+        assert isinstance(creation_token, DefaultToken)
     create.assert_called_once_with(b'', token=creation_token)
     if stage == 'creation':
         assert caught.value is creation_error
@@ -1047,7 +1132,8 @@ def test_closed_execution_errors_and_retry(monkeypatch, method, stage):
     assert caught.value is error
     expected_calls = [call.read()]
     if stage != 'read':
-        expected_calls.append(call.get(b'state'))
+        creation_options = {'token': events.get.call_args.kwargs['token']} if method == 'run' else {}
+        expected_calls.append(call.get(b'state', **creation_options))
     if stage in ('execute', 'kill'):
         passed_token = getattr(isolate, method).call_args.kwargs['token']
         expected_calls.extend(
@@ -1069,7 +1155,7 @@ def test_closed_execution_errors_and_retry(monkeypatch, method, stage):
     passed_token = getattr(replacement, method).call_args.kwargs['token']
     assert events.mock_calls == [
         call.read(),
-        call.get(b'state'),
+        call.get(b'state', **({'token': passed_token} if method == 'run' else {})),
         getattr(call.replacement, method)('retry', token=passed_token, exception=False),
         call.replacement.kill(),
     ]
@@ -1097,6 +1183,11 @@ def test_closed_calls_read_fresh_state(monkeypatch, first_method, second_method)
         is getattr(second, second_method).return_value
     )
     assert read.call_count == 2
-    assert get.call_args_list == [call(b'old'), call(b'new')]
+    first_token = getattr(first, first_method).call_args.kwargs['token']
+    second_token = getattr(second, second_method).call_args.kwargs['token']
+    assert get.call_args_list == [
+        call(b'old', **({'token': first_token} if first_method == 'run' else {})),
+        call(b'new', **({'token': second_token} if second_method == 'run' else {})),
+    ]
     first.kill.assert_called_once_with()
     second.kill.assert_called_once_with()

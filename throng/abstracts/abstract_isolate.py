@@ -3,11 +3,33 @@ from typing import List, Type, Union
 
 from cantok import AbstractToken, DefaultToken
 
+from throng.abstracts.meta import (
+    Benchmarks,
+    IsolateMeta,
+    IsolateResourcesDescription,
+    Resources,
+)
 from throng.abstracts.results import RunResultProtocol, SimpleRunResult
 from throng.errors import InterruptedChainError, NotSuccessfulRunError
 
 
 class AbstractIsolate(ABC):
+    @property
+    def meta(self) -> IsolateMeta:
+        description = self.get_resources_description()
+        benchmarks = self.get_benchmarks()
+
+        resources = Resources(
+            benchmarks=benchmarks,
+            shared=description.shared,
+            shared_with=description.shared_with,
+        )
+
+        return IsolateMeta(
+            id=self.get_id(),
+            resources=resources,
+        )
+
     def __del__(self) -> None:
         self.kill()
 
@@ -42,6 +64,19 @@ class AbstractIsolate(ABC):
 
     @abstractmethod
     def install(self, *packages: str, token: AbstractToken = DefaultToken()) -> None:  # noqa: B008
+        ...  # pragma: no cover
+
+    @abstractmethod
+    def get_benchmarks(self) -> Benchmarks:
+        ...  # pragma: no cover
+
+    @abstractmethod
+    def get_resources_description(self) -> IsolateResourcesDescription:
+        ...  # pragma: no cover
+
+    @abstractmethod
+    def get_id(self) -> str:
+        """Return an ID unique across plugins and stable for this isolate's lifetime."""
         ...  # pragma: no cover
 
     def chain(self, *commands: str, token: AbstractToken = DefaultToken(), exception: Union[bool, BaseException, Type[BaseException]] = False) -> List[RunResultProtocol]:  # noqa: B008

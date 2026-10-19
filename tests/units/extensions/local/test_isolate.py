@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, Mock, call
 import pytest
 from cantok import DefaultToken, SimpleToken
 
+from throng.abstracts.meta import Benchmarks, IsolateMeta, Resources
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import CannotInstallDependencyError, InterruptedInstallationError
 from throng.extensions.local.isolate import LocalIsolate
@@ -25,6 +26,20 @@ def test_constructor_preserves_resources(tmp_path, path_kind):
     assert isolate.lock is lock
     assert isolate.path == options[path_kind].get('path', Path())
     assert list(tmp_path.iterdir()) == []
+
+
+def test_meta_reports_shared_resources_without_measurements(tmp_path):
+    """Expose shared local resources even when benchmark results are unavailable."""
+    isolate = LocalIsolate(Lock(), tmp_path)
+
+    assert isolate.meta == IsolateMeta(
+        id=isolate.get_id(),
+        resources=Resources(
+            benchmarks=Benchmarks(None, None),
+            shared=True,
+            shared_with=None,
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -71,9 +86,10 @@ def test_run_forwards_command_and_token(tmp_path, monkeypatch, command, token_ki
     ],
 )
 def test_run_preserves_result_and_holds_lock(tmp_path, monkeypatch, outcome):
-    """Protect execution with the lock while retaining all plugin result data."""
+    """Protect execution and preserve result fields without changing isolate identity."""
     lock = Lock()
     isolate = LocalIsolate(lock, tmp_path)
+    original_id = isolate.get_id()
     success, code, stdout, stderr, killed = outcome
     fields = {
         'success': success,
@@ -91,15 +107,17 @@ def test_run_preserves_result_and_holds_lock(tmp_path, monkeypatch, outcome):
     monkeypatch.setattr('throng.extensions.local.isolate.run', execute)
 
     assert isolate.run('command') is expected
+    assert isolate.get_id() == isolate.meta.id == original_id
     assert {name: getattr(expected, name) for name in fields} == fields
     assert not lock.locked()
 
 
 @pytest.mark.parametrize('error_type', [RuntimeError, OSError, KeyboardInterrupt])
 def test_execution_error_releases_lock(tmp_path, monkeypatch, error_type):
-    """Propagate executor errors without blocking subsequent commands."""
+    """Preserve executor errors, release the lock and keep the same ID through a retry."""
     lock = Lock()
     isolate = LocalIsolate(lock, tmp_path)
+    original_id = isolate.get_id()
     error = error_type('execution failed')
     expected = SimpleRunResult(True)
     run = Mock(side_effect=[error, expected])
@@ -109,8 +127,10 @@ def test_execution_error_releases_lock(tmp_path, monkeypatch, error_type):
         isolate.run('failing')
 
     assert caught.value is error
+    assert isolate.get_id() == isolate.meta.id == original_id
     assert not lock.locked()
     assert isolate.run('retry') is expected
+    assert isolate.get_id() == isolate.meta.id == original_id
     assert not lock.locked()
 
 
@@ -134,8 +154,9 @@ def test_lock_failure_prevents_execution(tmp_path, monkeypatch, error_type):
 
 @pytest.mark.parametrize('populated', [False, True])
 def test_read_returns_empty_state_without_changes(tmp_path, monkeypatch, populated):
-    """Return empty local state without reading or modifying the user's files."""
+    """Return empty state without reading files, changing their contents or replacing the ID."""
     isolate = LocalIsolate(Lock(), tmp_path)
+    original_id = isolate.get_id()
 
     for content in (b'original', b'changed'):
         if populated:
@@ -150,6 +171,7 @@ def test_read_returns_empty_state_without_changes(tmp_path, monkeypatch, populat
             for name, operation in operations.items():
                 patcher.setattr(name, operation)
             assert isolate.read() == b''
+            assert isolate.get_id() == isolate.meta.id == original_id
         for operation in operations.values():
             operation.assert_not_called()
         if populated:
@@ -191,12 +213,14 @@ def test_install_preserves_package_order(
     returncode,
     stderr,
 ):
-    """Install in order, trusting success regardless of the exit code or diagnostics."""
+    """Install packages in order while retaining identity, even when run is replaced by a mock."""
     isolate = LocalIsolate(Lock(), tmp_path)
+    original_id = isolate.get_id()
     run = Mock(return_value=SimpleRunResult(True, returncode, 'installed', stderr))
     monkeypatch.setattr(isolate, 'run', run)
 
     assert isolate.install(*packages) is None
+    assert isolate.get_id() == isolate.meta.id == original_id
     token = run.call_args_list[0].kwargs['token'] if packages else None
     if packages:
         assert isinstance(token, DefaultToken)
@@ -214,8 +238,9 @@ def test_install_stops_at_unsuccessful_result(
     position,
     returncode,
 ):
-    """Stop on the first unsuccessful install using success rather than the exit code."""
+    """Stop at the first failed package and retain the live isolate ID after installation raises."""
     isolate = LocalIsolate(Lock(), tmp_path)
+    original_id = isolate.get_id()
     packages = ('one', 'two', 'three')
     run = Mock(
         side_effect=[SimpleRunResult(True)] * position
@@ -226,6 +251,7 @@ def test_install_stops_at_unsuccessful_result(
     with pytest.raises(CannotInstallDependencyError):
         isolate.install(*packages)
 
+    assert isolate.get_id() == isolate.meta.id == original_id
     token = run.call_args_list[0].kwargs['token']
     assert isinstance(token, DefaultToken)
     assert all(entry.kwargs['token'] is token for entry in run.call_args_list)
@@ -236,8 +262,9 @@ def test_install_stops_at_unsuccessful_result(
 
 @pytest.mark.parametrize('cancel_before_installation', [False, True])
 def test_install_stops_when_token_is_cancelled(tmp_path, monkeypatch, cancel_before_installation):
-    """Skip the first or next package as soon as the caller cancels installation."""
+    """Stop before the first or next cancelled package without replacing the live isolate ID."""
     isolate = LocalIsolate(Lock(), tmp_path)
+    original_id = isolate.get_id()
     token = SimpleToken(cancelled=cancel_before_installation)
     run = Mock(return_value=SimpleRunResult(True))
     if not cancel_before_installation:
@@ -250,6 +277,7 @@ def test_install_stops_when_token_is_cancelled(tmp_path, monkeypatch, cancel_bef
     with pytest.raises(InterruptedInstallationError) as caught:
         isolate.install('first', 'second', token=token)
 
+    assert isolate.get_id() == isolate.meta.id == original_id
     skipped = 'first' if cancel_before_installation else 'second'
     assert repr(skipped) in str(caught.value)
     assert run.call_args_list == (
@@ -267,8 +295,9 @@ def test_install_preserves_execution_exception(
     position,
     error_type,
 ):
-    """Propagate installation execution errors without trying later packages."""
+    """Preserve installer execution errors and the isolate ID without trying later packages."""
     isolate = LocalIsolate(Lock(), tmp_path)
+    original_id = isolate.get_id()
     error = error_type('installer failed')
     run = Mock(side_effect=[SimpleRunResult(True)] * position + [error])
     monkeypatch.setattr(isolate, 'run', run)
@@ -276,5 +305,6 @@ def test_install_preserves_execution_exception(
     with pytest.raises(error_type) as caught:
         isolate.install('one', 'two', 'three')
 
+    assert isolate.get_id() == isolate.meta.id == original_id
     assert caught.value is error
     assert run.call_count == position + 1

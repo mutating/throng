@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 from types import MethodType
 from unittest.mock import MagicMock, Mock, call
 
@@ -6,6 +7,13 @@ import pytest
 from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
+from throng.abstracts.meta import (
+    BenchmarkResult,
+    Benchmarks,
+    IsolateMeta,
+    IsolateResourcesDescription,
+    Resources,
+)
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import (
     InterruptedChainError,
@@ -421,8 +429,10 @@ def test_destructor_delegates_cleanup():
 
 
 def test_isolate_requires_concrete_operations():
-    """Require plugins to implement execution, snapshots, cleanup and installation."""
-    assert AbstractIsolate.__abstractmethods__ == {'_run', 'read', 'kill', 'install'}
+    """Require plugins to implement operations and metadata providers."""
+    assert AbstractIsolate.__abstractmethods__ == {
+        '_run', 'read', 'kill', 'install', 'get_benchmarks', 'get_resources_description', 'get_id',
+    }
     with pytest.raises(TypeError, match='abstract'):
         AbstractIsolate()
 
@@ -431,6 +441,9 @@ def test_isolate_requires_concrete_operations():
 def test_isolate_subclasses_need_no_preparation_constructor(explicit_init):
     """Construct isolates without preparation, including a no-argument super call."""
     methods = {name: Mock() for name in ('_run', 'read', 'kill', 'install')}
+    methods['get_benchmarks'] = Mock(return_value=Benchmarks(None, None))
+    methods['get_resources_description'] = Mock(return_value=IsolateResourcesDescription(shared=False, shared_with=None))
+    methods['get_id'] = Mock(return_value='test-isolate')
     if explicit_init:
         methods['__init__'] = lambda self: super(type(self), self).__init__()
     isolate_type = type('LegacyIsolate', (AbstractIsolate,), methods)
@@ -439,4 +452,195 @@ def test_isolate_subclasses_need_no_preparation_constructor(explicit_init):
 
     methods['_run'].assert_not_called()
     methods['kill'].assert_not_called()
+    methods['get_benchmarks'].assert_not_called()
+    methods['get_resources_description'].assert_not_called()
+    methods['get_id'].assert_not_called()
     isolate.kill()
+
+
+@pytest.mark.parametrize(
+    ('benchmark_case', 'shared', 'shared_with'),
+    [
+        ('none', False, None), ('both', False, None),
+        ('none', True, None), ('both', True, None),
+        ('none', True, ()), ('both', True, ()),
+        ('none', True, ('peer-b', 'peer-a')), ('both', True, ('peer-b', 'peer-a')),
+        ('single_only', True, None), ('multi_only', True, None),
+        ('zero_int_single', True, None), ('zero_float_multi', True, None),
+    ],
+)
+def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_with):
+    """Assemble complete or partial metadata without treating zero as missing data.
+
+    Distinct measurements expose swapped fields; None and an empty peer tuple
+    retain their different meanings. Opaque mixed-case IDs and unsorted peers
+    must pass through unchanged. Define measurement expectations as raw tuples
+    before constructing any models: a faulty constructor must not silently
+    change both the actual and expected slots or turn a zero score into one.
+    A non-UTC timestamp with microseconds exposes precision loss; inspect tzinfo
+    separately because datetime equality compares instants rather than offsets.
+    Aliased operation methods record unexpected work or cleanup by the wrapper;
+    the inherited destructor runs later.
+    """
+    when = datetime(2026, 10, 19, 12, 3, 7, 123456, tzinfo=timezone(timedelta(hours=3)))
+    single = (123.5, when, '0.0.2', 'benchset')
+    multi = (456.5, when + timedelta(days=1), 'custom-3', 'other-suite')
+    expected_single, expected_multi = {
+        'none': (None, None),
+        'both': (single, multi),
+        'single_only': (single, None),
+        'multi_only': (None, multi),
+        'zero_int_single': ((0, when, '0.0.2', 'benchset'), None),
+        'zero_float_multi': (None, (0.0, when, '0.0.2', 'benchset')),
+    }[benchmark_case]
+    benchmarks = Benchmarks(
+        BenchmarkResult(*expected_single) if expected_single is not None else None,
+        BenchmarkResult(*expected_multi) if expected_multi is not None else None,
+    )
+
+    class MetadataIsolate(AbstractIsolate):
+        def __init__(self):
+            self.operations = []
+
+        def get_id(self):
+            return 'Mixed-Case:Isolate-A'
+
+        def get_benchmarks(self):
+            return benchmarks
+
+        def get_resources_description(self):
+            return IsolateResourcesDescription(shared, shared_with)
+
+        def kill(self, *_args, **_kwargs):
+            self.operations.append('unexpected work')
+
+        _run = read = install = kill
+
+    isolate = MetadataIsolate()
+
+    actual = isolate.meta
+    assert actual == IsolateMeta(
+        id='Mixed-Case:Isolate-A',
+        resources=Resources(
+            benchmarks=benchmarks,
+            shared=shared,
+            shared_with=shared_with,
+        ),
+    )
+    assert actual.id == 'Mixed-Case:Isolate-A'
+    assert actual.resources.shared is shared
+    assert actual.resources.shared_with == shared_with
+    assert actual.resources.benchmarks == benchmarks
+    for actual_result, expected_result in (
+        (actual.resources.benchmarks.single_core, expected_single),
+        (actual.resources.benchmarks.multi_core, expected_multi),
+    ):
+        if expected_result is None:
+            assert actual_result is None
+        else:
+            assert actual_result is not None
+            assert (
+                actual_result.number,
+                actual_result.when,
+                actual_result.benchmarker_version,
+                actual_result.benchmarker,
+            ) == expected_result
+            assert actual_result.when.tzinfo == expected_result[1].tzinfo
+    assert isolate.operations == []
+
+
+@pytest.mark.parametrize('provider_name', ['get_resources_description', 'get_benchmarks', 'get_id'])
+@pytest.mark.parametrize('error_type', [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_meta_provider_failure_and_recovery(provider_name, error_type):
+    """Propagate each provider's original error and allow a clean retry on the same isolate.
+
+    The local source raises normal or control-flow exceptions without using
+    mocks. Its operation list detects wrapper work on either attempt; check it
+    while the isolate is alive, before the inherited destructor calls kill.
+    """
+    benchmarks = Benchmarks(BenchmarkResult(17, datetime(2026, 10, 19, tzinfo=timezone.utc), '0.0.2'), None)
+    failure = error_type('metadata unavailable')
+    original_error = failure
+
+    class RecoveringIsolate(AbstractIsolate):
+        def __init__(self):
+            self.operations = []
+
+        def get_id(self):
+            if provider_name == 'get_id' and failure is not None:
+                raise failure
+            return 'recovering-isolate'
+
+        def get_benchmarks(self):
+            if provider_name == 'get_benchmarks' and failure is not None:
+                raise failure
+            return benchmarks
+
+        def get_resources_description(self):
+            if provider_name == 'get_resources_description' and failure is not None:
+                raise failure
+            return IsolateResourcesDescription(True, ('peer',))
+
+        def kill(self, *_args, **_kwargs):
+            self.operations.append('unexpected work')
+
+        _run = read = install = kill
+
+    isolate = RecoveringIsolate()
+    with pytest.raises(error_type) as caught:
+        _ = isolate.meta
+
+    assert caught.value is original_error
+    assert isolate.operations == []
+
+    failure = None
+    assert isolate.meta == IsolateMeta('recovering-isolate', Resources(benchmarks, True, ('peer',)))
+    assert isolate.operations == []
+
+
+def test_meta_does_not_mix_data_between_isolates():
+    """Keep alternating metadata reads and saved values independent across instances.
+
+    A local concrete source stores real values per instance. Different data on
+    the same class exposes accidental class-wide state without mocking getters,
+    requiring new containers or defining how provider updates should be cached.
+    """
+    when = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    first_benchmarks = Benchmarks(BenchmarkResult(11, when, 'first-version'), None)
+    second_benchmarks = Benchmarks(None, BenchmarkResult(29.5, when + timedelta(days=1), 'second-version', 'other-suite'))
+
+    class IndependentMetadataIsolate(AbstractIsolate):
+        def __init__(self, identifier, benchmarks, description):
+            self.identifier = identifier
+            self.benchmarks = benchmarks
+            self.description = description
+            self.operations = []
+
+        def get_id(self):
+            return self.identifier
+
+        def get_benchmarks(self):
+            return self.benchmarks
+
+        def get_resources_description(self):
+            return self.description
+
+        def kill(self, *_args, **_kwargs):
+            self.operations.append('unexpected work')
+
+        _run = read = install = kill
+
+    first = IndependentMetadataIsolate('first', first_benchmarks, IsolateResourcesDescription(True, ('peer-a',)))
+    second = IndependentMetadataIsolate('second', second_benchmarks, IsolateResourcesDescription(False, None))
+    expected_first = IsolateMeta('first', Resources(first_benchmarks, True, ('peer-a',)))
+    expected_second = IsolateMeta('second', Resources(second_benchmarks, False, None))
+
+    saved_first = first.meta
+    assert saved_first == expected_first
+    saved_second = second.meta
+    assert saved_second == expected_second
+    assert first.meta == expected_first
+    assert second.meta == expected_second
+    assert saved_first == expected_first
+    assert saved_second == expected_second
+    assert first.operations == second.operations == []

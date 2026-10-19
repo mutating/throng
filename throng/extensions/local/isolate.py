@@ -1,10 +1,12 @@
 from pathlib import Path
+from uuid import uuid4
 
 from cantok import AbstractToken, DefaultToken
 from locklib import ContextLockProtocol
 from suby import SubprocessResult, run
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
+from throng.abstracts.meta import Benchmarks, IsolateResourcesDescription
 from throng.errors import CannotInstallDependencyError, InterruptedInstallationError
 
 
@@ -12,6 +14,7 @@ class LocalIsolate(AbstractIsolate):
     def __init__(self, lock: ContextLockProtocol, path: Path = Path()) -> None:
         self.lock = lock
         self.path = path
+        self.id = uuid4().hex
 
     def _run(self, command: str, token: AbstractToken = DefaultToken()) -> SubprocessResult:  # noqa: B008
         with self.lock:
@@ -30,3 +33,15 @@ class LocalIsolate(AbstractIsolate):
             install_result = self.run(f'pip install {package}', token=token)
             if not install_result.success:
                 raise CannotInstallDependencyError(f'The installation of package {package!r} failed.', install_result)
+
+    def get_resources_description(self) -> IsolateResourcesDescription:
+        return IsolateResourcesDescription(
+            shared=True,
+            shared_with=None,
+        )
+
+    def get_benchmarks(self) -> Benchmarks:
+        return Benchmarks(None, None)
+
+    def get_id(self) -> str:
+        return self.id

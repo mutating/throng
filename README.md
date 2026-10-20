@@ -35,6 +35,7 @@ This library provides:
 - [**Isolates and command execution**](#isolates-and-command-execution)
 - [**Managers**](#managers)
 - [**Plugins**](#plugins)
+- [**Metadata**](#metadata)
 
 
 ## Installation
@@ -381,3 +382,43 @@ manager = managers['plugin_name']
 ```
 
 Once you've installed the plugin and loaded it into your code, you can use it just like any of the built-in plugins. For information on the features of third-party plugins—such as the degree of command isolation or the level of parallelism—please refer to the documentation included with the plugin.
+
+
+## Metadata
+
+Sometimes, when writing high-level logic on top of isolates, it can be helpful to know some details about their internal structure. For example, to schedule distributed work more efficiently, you might want to know how fast a particular isolate can perform computations.
+
+For this purpose, `throng` provides a mechanism for isolates to optionally supply metadata. To retrieve metadata for a specific isolate, simply retrieve its `.meta` attribute and examine its fields:
+
+```python
+managers = throng('.')
+manager = managers['some_plugin']
+state = manager.read()
+isolate = manager.get(state)
+
+meta = isolate.meta
+print(meta)
+#> IsolateMeta(id='6d3e01592d774b85ad8806396aaf7772', resources=Resources(benchmarks=Benchmarks(single_core=BenchmarkResult(number=1532.4, when=datetime.datetime(2026, 10, 19, 12, 30, tzinfo=datetime.timezone.utc), benchmarker_version='0.0.2', benchmarker='benchset'), multi_core=BenchmarkResult(number=5687.1, when=datetime.datetime(2026, 10, 19, 12, 30, tzinfo=datetime.timezone.utc), benchmarker_version='0.0.2', benchmarker='benchset')), shared=False, shared_with=None))
+```
+
+The main metadata space primarily contains the isolate's unique identifier:
+
+```python
+print(meta.id)
+#> 6d3e01592d774b85ad8806396aaf7772
+```
+
+And all data related to the resources available to it is located in `.resources`:
+
+```python
+print(meta.resources)
+#> Resources(benchmarks=Benchmarks(single_core=BenchmarkResult(number=1532.4, when=datetime.datetime(2026, 10, 19, 12, 30, tzinfo=datetime.timezone.utc), benchmarker_version='0.0.2', benchmarker='benchset'), multi_core=BenchmarkResult(number=5687.1, when=datetime.datetime(2026, 10, 19, 12, 30, tzinfo=datetime.timezone.utc), benchmarker_version='0.0.2', benchmarker='benchset')), shared=False, shared_with=None)
+```
+
+This section contains:
+
+- Benchmark results, if provided by the isolate; otherwise, `None`
+- An indication that the resource described here is shared among more than one isolate
+- If the resource is shared, a tuple containing the identifiers of the other isolates that are currently using it is provided; otherwise, `None`, if this information is not available
+
+Benchmark results, when provided, consist of numbers that abstractly describe a certain type of performance. Do not interpret these numbers as having any absolute value or unit of measurement. They are only useful for comparing the relative performance of different isolates. The higher the number, the better the performance. For benchmarking, all isolates must use the [benchset](https://github.com/mutating/benchset) library. The version of this library is included with each benchmark result entry; the latest available version is always preferred. Detailed descriptions of each benchmark can be found in the `benchset` documentation.

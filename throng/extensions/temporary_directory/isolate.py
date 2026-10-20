@@ -4,11 +4,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
 from typing import List, Optional
+from uuid import uuid4
 
 from cantok import AbstractToken, DefaultToken
 from suby import SubprocessResult, run
 
 from throng.abstracts.abstract_isolate import AbstractIsolate
+from throng.abstracts.meta import Benchmarks, IsolateResourcesDescription
 from throng.errors import CannotInstallDependencyError, InterruptedInstallationError
 from throng.extensions.temporary_directory.errors import DirectoryDoesNotExistError
 from throng.extensions.temporary_directory.read import read_directory
@@ -21,6 +23,7 @@ class TemporaryDirectoryIsolate(AbstractIsolate):
         self.used = False
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name)
+        self.id = uuid4().hex
 
         try:
             self.set_state(state)
@@ -59,3 +62,15 @@ class TemporaryDirectoryIsolate(AbstractIsolate):
             install_result = self.run(f'pip install {package}', token=token)
             if not install_result.success:
                 raise CannotInstallDependencyError(f'The installation of package {package!r} failed.', install_result)
+
+    def get_resources_description(self) -> IsolateResourcesDescription:
+        return IsolateResourcesDescription(
+            shared=True,
+            shared_with=None,
+        )
+
+    def get_benchmarks(self) -> Benchmarks:
+        return Benchmarks(None, None)
+
+    def get_id(self) -> str:
+        return self.id

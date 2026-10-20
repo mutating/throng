@@ -1,6 +1,7 @@
 from inspect import signature
 from pathlib import Path
 from unittest.mock import Mock
+from uuid import uuid4
 
 import pytest
 from cantok import DefaultToken, SimpleToken
@@ -8,6 +9,7 @@ from cantok import DefaultToken, SimpleToken
 from throng import local, temporary_directory, throng
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.abstract_manager import AbstractManager
+from throng.abstracts.meta import Benchmarks, IsolateResourcesDescription
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
 from throng.extensions.local.manager import LocalManager
@@ -149,6 +151,7 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
     class PluginIsolate(AbstractIsolate):
         def __init__(self, state):
             self.state = state
+            self.id = uuid4().hex
 
         def _run(self, command, token=None):
             result = SimpleRunResult(command != 'fail', 7 if command == 'fail' else 0)
@@ -163,6 +166,15 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
 
         def install(self, *_dependencies):
             pass
+
+        def get_benchmarks(self):
+            return Benchmarks(None, None)
+
+        def get_resources_description(self):
+            return IsolateResourcesDescription(shared=False, shared_with=None)
+
+        def get_id(self):
+            return self.id
 
     class PluginManager(AbstractManager):
         def _get(self, state, token=DefaultToken()):  # noqa: B008, ARG002
@@ -236,6 +248,7 @@ def test_external_plugin_uses_explicit_get_token_for_creation_and_preparation(tm
         def __init__(self, state, creation_token):
             self.state = state
             self.creation_token = creation_token
+            self.id = uuid4().hex
 
         def _run(self, command, token=DefaultToken()):  # noqa: B008
             executions.append((command, token))
@@ -249,6 +262,15 @@ def test_external_plugin_uses_explicit_get_token_for_creation_and_preparation(tm
 
         def install(self, *_dependencies):
             pass
+
+        def get_benchmarks(self):
+            return Benchmarks(None, None)
+
+        def get_resources_description(self):
+            return IsolateResourcesDescription(shared=False, shared_with=None)
+
+        def get_id(self):
+            return self.id
 
     class TokenAwareManager(AbstractManager):
         def _get(self, state, token=DefaultToken()):  # noqa: B008
@@ -286,6 +308,7 @@ def test_external_plugin_installs_slot_packages_before_preparation(tmp_path, sel
     class PackageAwareIsolate(AbstractIsolate):
         def __init__(self, state):
             self.state = state
+            self.id = uuid4().hex
 
         def _run(self, command, token=DefaultToken()):  # noqa: B008
             events.append(('prepare', command, token))
@@ -299,6 +322,15 @@ def test_external_plugin_installs_slot_packages_before_preparation(tmp_path, sel
 
         def install(self, *requested, token=DefaultToken()):  # noqa: B008
             events.append(('install', requested, token))
+
+        def get_benchmarks(self):
+            return Benchmarks(None, None)
+
+        def get_resources_description(self):
+            return IsolateResourcesDescription(shared=False, shared_with=None)
+
+        def get_id(self):
+            return self.id
 
     class PackageAwareManager(AbstractManager):
         def _get(self, state, token=DefaultToken()):  # noqa: B008
@@ -332,6 +364,45 @@ def test_external_plugin_installs_slot_packages_before_preparation(tmp_path, sel
         assert events[-1] == ('kill', isolate)
     finally:
         del throng['package_aware_test_plugin']
+
+
+@pytest.mark.parametrize(
+    ('relationship', 'first_plugin', 'second_plugin'),
+    [
+        ('same_manager', 'local', 'local'),
+        ('same_manager', 'temporary_directory', 'temporary_directory'),
+        ('different_managers', 'local', 'local'),
+        ('different_managers', 'temporary_directory', 'temporary_directory'),
+        ('different_plugins', 'local', 'temporary_directory'),
+    ],
+)
+def test_builtin_metadata_uses_stable_distinct_ids(tmp_path, relationship, first_plugin, second_plugin):
+    """Keep isolate IDs distinct across manager and plugin boundaries for the same source.
+
+    Repeated getters and metadata reads must agree with the initial string IDs.
+    Check the runtime type independently: a UUID object can be stable, unique
+    and equal to the same value in metadata while still violating the API.
+    The relationship table avoids fixing the string format or sampling UUIDs.
+    """
+    first_manager = throng[first_plugin](tmp_path)[first_plugin]
+    second_manager = (
+        first_manager if relationship == 'same_manager'
+        else throng[second_plugin](tmp_path)[second_plugin]
+    )
+
+    with first_manager.scope as first, second_manager.scope as second:
+        first_id = first.get_id()
+        second_id = second.get_id()
+
+        assert isinstance(first_id, str)
+        assert isinstance(second_id, str)
+        assert first_id
+        assert second_id
+        assert first_id != second_id
+        assert first.meta.id == first_id
+        assert second.meta.id == second_id
+        assert first.meta.id == first.get_id() == first_id
+        assert second.meta.id == second.get_id() == second_id
 
 
 @pytest.mark.parametrize(

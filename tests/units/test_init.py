@@ -11,7 +11,7 @@ import pytest
         ('RunResultProtocol', 'throng.abstracts.results'),
         ('throng', 'throng.slots'),
         ('local', 'throng.extensions.plugins'),
-        ('temporary_directory', 'throng.extensions.plugins'),
+        ('directories', 'throng.extensions.plugins'),
     ],
 )
 def test_public_exports_match_implementation(name, module):

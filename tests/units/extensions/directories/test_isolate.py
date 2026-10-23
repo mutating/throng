@@ -14,9 +14,9 @@ from cantok import DefaultToken, SimpleToken
 from throng.abstracts.meta import Benchmarks, IsolateMeta, Resources
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import CannotInstallDependencyError, InterruptedInstallationError
-from throng.extensions.temporary_directory.errors import DirectoryDoesNotExistError
-from throng.extensions.temporary_directory.isolate import TemporaryDirectoryIsolate
-from throng.extensions.temporary_directory.read import read_directory
+from throng.extensions.directories.errors import DirectoryDoesNotExistError
+from throng.extensions.directories.isolate import DirectoriesIsolate
+from throng.extensions.directories.read import read_directory
 
 
 @pytest.mark.parametrize(
@@ -34,7 +34,7 @@ def test_constructor_restores_snapshot(files, exclude):
             member.size = len(data)
             archive.addfile(member, BytesIO(data))
 
-    isolate = TemporaryDirectoryIsolate(buffer.getvalue(), exclude)
+    isolate = DirectoriesIsolate(buffer.getvalue(), exclude)
     try:
         assert isinstance(isolate.path, Path)
         assert isolate.path == Path(isolate.directory.name)
@@ -58,7 +58,7 @@ def test_meta_reports_shared_resources_without_measurements():
     buffer = BytesIO()
     with tarfile.open(fileobj=buffer, mode='w'):
         pass
-    isolate = TemporaryDirectoryIsolate(buffer.getvalue(), None)
+    isolate = DirectoriesIsolate(buffer.getvalue(), None)
     try:
         assert isolate.meta == IsolateMeta(
             id=isolate.get_id(),
@@ -86,7 +86,7 @@ def test_constructor_accepts_supported_tar_formats(mode, module):
         member.size = 4
         archive.addfile(member, BytesIO(b'data'))
 
-    isolate = TemporaryDirectoryIsolate(buffer.getvalue(), None)
+    isolate = DirectoriesIsolate(buffer.getvalue(), None)
     try:
         assert (isolate.path / 'file').read_bytes() == b'data'
     finally:
@@ -108,13 +108,13 @@ def test_constructor_cleans_directory_if_snapshot_is_invalid(monkeypatch, failur
         allocated.append(Path(directory.name))
         return directory
 
-    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.TemporaryDirectory', allocate)
+    monkeypatch.setattr('throng.extensions.directories.isolate.TemporaryDirectory', allocate)
     if isinstance(failure, BaseException):
-        monkeypatch.setattr(TemporaryDirectoryIsolate, 'set_state', Mock(side_effect=failure))
+        monkeypatch.setattr(DirectoriesIsolate, 'set_state', Mock(side_effect=failure))
     expected_error = type(failure) if isinstance(failure, BaseException) else tarfile.ReadError
     try:
         with pytest.raises(expected_error) as caught:
-            TemporaryDirectoryIsolate(failure if isinstance(failure, bytes) else b'state', None)
+            DirectoriesIsolate(failure if isinstance(failure, bytes) else b'state', None)
         if isinstance(failure, BaseException):
             assert caught.value is failure
         assert caught.value.__traceback__ is not None
@@ -130,7 +130,7 @@ def test_constructor_cleans_directory_if_snapshot_is_invalid(monkeypatch, failur
 def test_set_state_updates_live_files(tmp_path, change):
     """Apply a new snapshot to the live directory without replacing its ID or changing the source."""
     (tmp_path / 'file').write_bytes(b'original')
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     original_id = isolate.get_id()
     name = {'add': 'new', 'replace': 'file', 'nested': 'nested/new'}[change]
     buffer = BytesIO()
@@ -153,11 +153,11 @@ def test_set_state_updates_live_files(tmp_path, change):
 def test_read_uses_own_directory_and_exclusions(tmp_path, monkeypatch, exclude):
     """Read the correct directory and exclusions without altering snapshot bytes or isolate ID."""
     expected_exclude = None if exclude is None else exclude.copy()
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), exclude)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), exclude)
     original_id = isolate.get_id()
     read = Mock(return_value=b'\x00\xffsnapshot')
     monkeypatch.setattr(
-        'throng.extensions.temporary_directory.isolate.read_directory',
+        'throng.extensions.directories.isolate.read_directory',
         read,
     )
     try:
@@ -178,7 +178,7 @@ def test_read_captures_changes_for_an_independent_isolate(tmp_path, change):
     restore its creator's ID. Later filesystem changes and cleanup remain local.
     """
     (tmp_path / 'file').write_bytes(b'old')
-    first = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    first = DirectoriesIsolate(read_directory(tmp_path, None), None)
     original_id = first.get_id()
     try:
         if change == 'add':
@@ -199,7 +199,7 @@ def test_read_captures_changes_for_an_independent_isolate(tmp_path, change):
                 member.name: archive.extractfile(member).read()
                 for member in archive.getmembers()
             } == expected
-        second = TemporaryDirectoryIsolate(state, None)
+        second = DirectoriesIsolate(state, None)
         try:
             assert first.get_id() == first.meta.id == original_id
             assert second.get_id() == second.meta.id
@@ -229,7 +229,7 @@ def test_read_excludes_existing_and_new_files(tmp_path, created_later):
     (tmp_path / 'keep').write_bytes(b'keep')
     if not created_later:
         (tmp_path / 'drop.tmp').write_bytes(b'drop')
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), ['*.tmp'])
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), ['*.tmp'])
     try:
         if created_later:
             (isolate.path / 'drop.tmp').write_bytes(b'drop')
@@ -250,7 +250,7 @@ def test_read_excludes_existing_and_new_files(tmp_path, created_later):
 def test_invalid_state_releases_lock(tmp_path, state):
     """Release the lock and retain the live isolate ID after an invalid archive and a valid retry."""
     valid_state = read_directory(tmp_path, None)
-    isolate = TemporaryDirectoryIsolate(valid_state, None)
+    isolate = DirectoriesIsolate(valid_state, None)
     original_id = isolate.get_id()
     try:
         with pytest.raises((tarfile.ReadError, EOFError)):
@@ -269,7 +269,7 @@ def test_invalid_state_releases_lock(tmp_path, state):
 @pytest.mark.parametrize('error_type', [OSError, PermissionError])
 def test_extraction_error_closes_archive(tmp_path, monkeypatch, error_type):
     """Close the archive and release the lock after extraction fails, preserving the live isolate ID."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     original_id = isolate.get_id()
     error = error_type('extraction failed')
     context = MagicMock()
@@ -279,7 +279,7 @@ def test_extraction_error_closes_archive(tmp_path, monkeypatch, error_type):
     try:
         with monkeypatch.context() as patcher:
             patcher.setattr(
-                'throng.extensions.temporary_directory.isolate.tarfile.open',
+                'throng.extensions.directories.isolate.tarfile.open',
                 open_archive,
             )
             with pytest.raises(error_type) as caught:
@@ -307,9 +307,9 @@ def test_extraction_error_closes_archive(tmp_path, monkeypatch, error_type):
 @pytest.mark.parametrize('token_kind', ['default', 'active', 'cancelled'])
 def test_run_forwards_command_and_token(tmp_path, monkeypatch, command, token_kind):
     """Execute unchanged commands in the temporary directory with cancellation."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     run = Mock(return_value=SimpleRunResult(True))
-    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', run)
+    monkeypatch.setattr('throng.extensions.directories.isolate.run', run)
     token = SimpleToken(cancelled=token_kind == 'cancelled')
     try:
         result = isolate.run(
@@ -348,7 +348,7 @@ def test_run_forwards_command_and_token(tmp_path, monkeypatch, command, token_ki
 )
 def test_run_preserves_plugin_result(tmp_path, monkeypatch, outcome):
     """Preserve every plugin result field and the isolate ID for successful or failed commands."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     original_id = isolate.get_id()
     success, code, stdout, stderr, killed = outcome
     fields = {
@@ -360,7 +360,7 @@ def test_run_preserves_plugin_result(tmp_path, monkeypatch, outcome):
     }
     expected = Mock(**fields)
     monkeypatch.setattr(
-        'throng.extensions.temporary_directory.isolate.run',
+        'throng.extensions.directories.isolate.run',
         Mock(return_value=expected),
     )
     try:
@@ -376,12 +376,12 @@ def test_run_preserves_plugin_result(tmp_path, monkeypatch, outcome):
 @pytest.mark.parametrize('error_type', [RuntimeError, OSError, KeyboardInterrupt])
 def test_execution_error_allows_retry(tmp_path, monkeypatch, error_type):
     """Keep the directory usable and its ID unchanged after an executor exception and a retry."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     original_id = isolate.get_id()
     error = error_type('execution failed')
     expected = SimpleRunResult(True)
     run = Mock(side_effect=[error, expected])
-    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', run)
+    monkeypatch.setattr('throng.extensions.directories.isolate.run', run)
     try:
         with pytest.raises(error_type) as caught:
             isolate.run('failing')
@@ -413,7 +413,7 @@ def test_install_preserves_package_order(
     stderr,
 ):
     """Install packages in order while retaining identity, even when run is replaced by a mock."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     original_id = isolate.get_id()
     run = Mock(return_value=SimpleRunResult(True, returncode, 'installed', stderr))
     monkeypatch.setattr(isolate, 'run', run)
@@ -442,7 +442,7 @@ def test_install_stops_at_unsuccessful_result(
     returncode,
 ):
     """Stop at the first failed package and retain the live isolate ID after installation raises."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     original_id = isolate.get_id()
     packages = ('one', 'two', 'three')
     run = Mock(
@@ -469,7 +469,7 @@ def test_install_stops_at_unsuccessful_result(
 @pytest.mark.parametrize('cancel_before_installation', [False, True])
 def test_install_stops_when_token_is_cancelled(tmp_path, monkeypatch, cancel_before_installation):
     """Stop before the first or next cancelled package without replacing the live isolate ID."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     original_id = isolate.get_id()
     token = SimpleToken(cancelled=cancel_before_installation)
     run = Mock(return_value=SimpleRunResult(True))
@@ -507,7 +507,7 @@ def test_install_preserves_execution_exception(
     error_type,
 ):
     """Keep installer exceptions and the isolate ID intact without executing later packages."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     original_id = isolate.get_id()
     error = error_type('installer failed')
     run = Mock(side_effect=[SimpleRunResult(True)] * position + [error])
@@ -530,9 +530,9 @@ def test_kill_removes_only_own_directory(tmp_path, tree, repetitions):
     """Safely repeat cleanup without deleting source files or another isolate."""
     (tmp_path / 'source').write_bytes(b'keep')
     state = read_directory(tmp_path, None)
-    first = TemporaryDirectoryIsolate(state, None)
+    first = DirectoriesIsolate(state, None)
     try:
-        second = TemporaryDirectoryIsolate(state, None)
+        second = DirectoriesIsolate(state, None)
         try:
             (first.path / 'source').unlink()
             if tree == 'populated':
@@ -586,18 +586,18 @@ def test_destroyed_isolate_rejects_work_before_external_calls(
         'one_package': ('one',),
         'several_packages': ('one', 'two'),
     }[argument_kind]
-    isolate = TemporaryDirectoryIsolate(state, None)
+    isolate = DirectoriesIsolate(state, None)
     try:
         isolate.kill()
         assert not isolate.lock.locked()
         run, read, open_archive = Mock(), Mock(), Mock()
-        monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', run)
+        monkeypatch.setattr('throng.extensions.directories.isolate.run', run)
         monkeypatch.setattr(
-            'throng.extensions.temporary_directory.isolate.read_directory',
+            'throng.extensions.directories.isolate.read_directory',
             read,
         )
         monkeypatch.setattr(
-            'throng.extensions.temporary_directory.isolate.tarfile.open',
+            'throng.extensions.directories.isolate.tarfile.open',
             open_archive,
         )
 
@@ -617,7 +617,7 @@ def test_destroyed_isolate_rejects_work_before_external_calls(
 
 def test_cleanup_can_be_retried_after_failure(tmp_path, monkeypatch):
     """Report cleanup failure without retaining the lock or preventing a retry."""
-    isolate = TemporaryDirectoryIsolate(read_directory(tmp_path, None), None)
+    isolate = DirectoriesIsolate(read_directory(tmp_path, None), None)
     cleanup = isolate.directory.cleanup
     error = OSError('cleanup failed')
     attempts = Mock(wraps=cleanup, side_effect=[error, DEFAULT])
@@ -651,7 +651,7 @@ def test_operations_hold_and_release_lock(tmp_path, monkeypatch, operation, fail
     Cleanup bypasses kill and releases leaked locks so a failed assertion cannot hang.
     """
     state = read_directory(tmp_path, None)
-    isolate = TemporaryDirectoryIsolate(state, None)
+    isolate = DirectoriesIsolate(state, None)
     original_id = isolate.get_id()
     error = OSError('operation failed')
     lock = isolate.lock
@@ -684,8 +684,8 @@ def test_operations_hold_and_release_lock(tmp_path, monkeypatch, operation, fail
                 patcher.setattr(isolate.directory, 'cleanup', dependency)
             else:
                 target = {
-                    'run': 'throng.extensions.temporary_directory.isolate.run',
-                    'read': 'throng.extensions.temporary_directory.isolate.read_directory',
+                    'run': 'throng.extensions.directories.isolate.run',
+                    'read': 'throng.extensions.directories.isolate.read_directory',
                     'set_state': 'tarfile.TarFile.extractall',
                 }[operation]
                 patcher.setattr(target, dependency)
@@ -717,12 +717,12 @@ def test_operations_hold_and_release_lock(tmp_path, monkeypatch, operation, fail
 def test_isolates_have_independent_locks(tmp_path, same_state):
     """Keep separate isolates independently lockable regardless of snapshot contents."""
     state = read_directory(tmp_path, None)
-    first = TemporaryDirectoryIsolate(state, None)
+    first = DirectoriesIsolate(state, None)
     try:
         if not same_state:
             (tmp_path / 'new').write_bytes(b'different snapshot')
             state = read_directory(tmp_path, None)
-        second = TemporaryDirectoryIsolate(state, None)
+        second = DirectoriesIsolate(state, None)
         try:
             assert first.lock is not second.lock
             assert not first.lock.locked()
@@ -749,7 +749,7 @@ def test_operations_and_kill_share_lock(tmp_path, monkeypatch, operation, kill_f
     Final cleanup bypasses tested methods and releases any leaked lock after workers stop.
     """
     state = read_directory(tmp_path, None)
-    isolate = TemporaryDirectoryIsolate(state, None)
+    isolate = DirectoriesIsolate(state, None)
     lock, cleanup = isolate.lock, isolate.directory.cleanup
     entered, second_attempted, release = (Event() for _ in range(3))
     observed_lock = MagicMock()
@@ -780,8 +780,8 @@ def test_operations_and_kill_share_lock(tmp_path, monkeypatch, operation, kill_f
             else:
                 dependency.side_effect = hold_first
             target = {
-                'run': 'throng.extensions.temporary_directory.isolate.run',
-                'read': 'throng.extensions.temporary_directory.isolate.read_directory',
+                'run': 'throng.extensions.directories.isolate.run',
+                'read': 'throng.extensions.directories.isolate.read_directory',
                 'set_state': 'tarfile.TarFile.extractall',
             }[operation]
             patcher.setattr(target, dependency)

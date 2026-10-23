@@ -56,7 +56,7 @@ As an example, let's try creating a file in a directory and verify that it was c
 ```python
 >>> from throng import throng
 >>>
->>> with throng('.')['temporary_directory'].scope as isolate:
+>>> with throng('.')['directories'].scope as isolate:
 ...     isolate.run('ls')
 ...     isolate.run('touch file.txt')
 ...     isolate.run('ls')
@@ -70,7 +70,7 @@ Let’s understand this code:
 
 - The `with ... as isolate` construct creates an environment for executing commands, while ensuring that this environment is cleaned up or destroyed as needed after exiting the code block.
 - `isolate.run()` executes the commands in the created temporary environment.
-- Where exactly will the commands be executed? In this case, it’s determined by the `'temporary_directory'` string, which is actually the name of a built-in plugin. If needed, it can be replaced with the name of any other command-execution plugin you can connect, and your main code will work with it as if nothing had changed. This particular plugin creates a temporary directory on your computer, copies all files from the current directory into it, and deletes the entire directory once it’s finished.
+- Where exactly will the commands be executed? In this case, it’s determined by the `'directories'` string, which is actually the name of a built-in plugin. If needed, it can be replaced with the name of any other command-execution plugin you can connect, and your main code will work with it as if nothing had changed. This particular plugin creates a temporary directory on your computer, copies all files from the current directory into it, and deletes the entire directory once it’s finished.
 - `'.'` means that the state of the current directory is transferred to the execution environment. You can use a different directory.
 
 
@@ -110,7 +110,7 @@ from throng import throng
 
 managers = throng('.')
 print(managers)
-#> {'local': LocalManager('.'), 'temporary_directory': TemporaryDirectoryManager('.')}
+#> {'local': LocalManager('.'), 'directories': DirectoriesManager('.')}
 ```
 
 > ↑ We pass a dot (`'.'`) as a reference to the current directory, the state of which will serve as the basis for all isolates that are created (you'll learn what these are later).
@@ -214,7 +214,7 @@ As a reminder, to obtain an isolate, you need to ask the manager to get the stat
 from throng import throng
 
 managers = throng('.')
-manager = managers['temporary_directory']
+manager = managers['directories']
 state = manager.read()
 isolate = manager.get(state)
 ```
@@ -358,11 +358,11 @@ With the open method of accessing isolates, both reading the current directory a
 
 The plugin that uses temporary directories does almost the same thing, but creating an isolate involves the following steps: `manager.read()` packs all files in the specified directory (and this is important: only files, not empty directories) into a tar archive with paths relative to that directory; then `manager.get(state)` creates a temporary directory with a random name on your computer; and finally, the supplied archive is extracted there. When the isolate is destroyed, the entire directory that was created is deleted. Commands are executed via subprocesses, which are passed the path to the temporary directory for command execution.
 
-You can retrieve the manager from the plugin that handles temporary directories using the `'temporary_directory'` key:
+You can retrieve the manager from the plugin that handles temporary directories using the `'directories'` key:
 
 ```python
 managers = throng('.')
-manager = managers['temporary_directory']
+manager = managers['directories']
 ```
 
 As you can see, the built-in plugins are very limited, and they will almost certainly not be enough for you, so you can install additional ones. Any `throng` plugin is simply a Python package that can be installed via `pip` or `uv` and is packaged in a specific way using `pristan`. In other words, all you need to install a plugin is a command like this:
@@ -376,7 +376,7 @@ Once the package is installed, it will automatically be available in your code f
 ```python
 managers = throng('.')
 print(managers)
-#> {'local': LocalManager('.'), 'temporary_directory': TemporaryDirectoryManager('.'), 'plugin_name': ThirdPartyManager('.')}
+#> {'local': LocalManager('.'), 'directories': DirectoriesManager('.'), 'plugin_name': ThirdPartyManager('.')}
 
 manager = managers['plugin_name']
 ```

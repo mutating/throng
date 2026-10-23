@@ -21,8 +21,8 @@ from throng.errors import (
     NotSupportedCommandError,
     PreparationCommandFailedError,
 )
+from throng.extensions.directories.manager import DirectoriesManager
 from throng.extensions.local.manager import LocalManager
-from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
 
 
 @pytest.mark.parametrize('form', ['omitted', 'none', 'empty'])
@@ -558,7 +558,7 @@ def test_initialization_is_lazy(tmp_path, monkeypatch, path_kind, name, exclude)
     path = {'string': name, 'path': Path(name), 'absolute': tmp_path / name}[path_kind]
     expected_exclude = None if exclude is None else exclude.copy()
 
-    manager = TemporaryDirectoryManager(path, exclude)
+    manager = DirectoriesManager(path, exclude)
 
     assert manager.path == Path(path)
     assert manager.exclude == expected_exclude
@@ -567,7 +567,7 @@ def test_initialization_is_lazy(tmp_path, monkeypatch, path_kind, name, exclude)
 
 def test_default_exclusions_are_absent():
     """Leave file exclusions unset when callers omit them."""
-    assert TemporaryDirectoryManager('.').exclude is None
+    assert DirectoriesManager('.').exclude is None
 
 
 @pytest.mark.parametrize('as_string', [False, True])
@@ -601,7 +601,7 @@ def test_default_preparation_is_absent():
     ('manager_type', 'name'),
     [
         (LocalManager, 'LocalManager'),
-        (TemporaryDirectoryManager, 'TemporaryDirectoryManager'),
+        (DirectoriesManager, 'DirectoriesManager'),
     ],
 )
 @pytest.mark.parametrize(
@@ -646,7 +646,7 @@ def test_manager_requires_read_and_creation_hook(implemented):
 @pytest.mark.parametrize('prepare', [None, [], ['prepare']])
 def test_scope_is_lazy_and_independent(monkeypatch, prepare):
     """Allocate a fresh context on demand without creating an isolate early."""
-    manager = TemporaryDirectoryManager('.', prepare=prepare)
+    manager = DirectoriesManager('.', prepare=prepare)
     read, get = Mock(), Mock()
     monkeypatch.setattr(manager, 'read', read)
     monkeypatch.setattr(manager, 'get', get)
@@ -737,7 +737,7 @@ def test_scope_rejects_token_redefinition(first_form, second_form, cancelled):
 @pytest.mark.parametrize('failure', ['preparation', 'interrupt', 'exit'])
 def test_failed_preparation_never_exposes_an_isolate(monkeypatch, operation, failure):
     """Propagate creation failures unchanged and leave cleanup to get."""
-    manager = TemporaryDirectoryManager('.', prepare=['setup'])
+    manager = DirectoriesManager('.', prepare=['setup'])
     result = SimpleRunResult(False, 1, '', 'setup failed')
     cause = NotSuccessfulRunError('setup failed', result)
     error = {
@@ -856,7 +856,7 @@ def test_exit_without_isolate_is_rejected(failed_stage):
 @pytest.mark.parametrize('nested', [False, True])
 def test_contexts_manage_separate_isolates(monkeypatch, nested):
     """Keep separate scopes independent and close nested isolates in reverse order."""
-    manager = TemporaryDirectoryManager('.')
+    manager = DirectoriesManager('.')
     events = Mock()
     first, second = Mock(), Mock()
     events.attach_mock(first, 'first')
@@ -913,7 +913,7 @@ def test_closed_execution_delegates_and_cleans_up(
     outcome,
 ):
     """Delegate unchanged commands and tokens, returning the result only after cleanup."""
-    manager = TemporaryDirectoryManager('.')
+    manager = DirectoriesManager('.')
     events = Mock()
     isolate = events.isolate
     events.read.return_value = b'\xffstate'
@@ -1083,7 +1083,7 @@ def test_chain_preserves_mixed_plugin_results(monkeypatch, outcomes):
 
     Save the original order separately to detect mutations of the returned list.
     """
-    manager = TemporaryDirectoryManager('.')
+    manager = DirectoriesManager('.')
     isolate = Mock()
     originals = tuple(
         Mock(success=success, returncode=code, extra=object())
@@ -1109,7 +1109,7 @@ def test_chain_preserves_mixed_plugin_results(monkeypatch, outcomes):
 @pytest.mark.parametrize('stage', ['read', 'get', 'execute', 'kill'])
 def test_closed_execution_errors_and_retry(monkeypatch, method, stage):
     """Propagate stage errors, clean up created isolates and allow a fresh retry."""
-    manager = TemporaryDirectoryManager('.')
+    manager = DirectoriesManager('.')
     events = Mock()
     isolate = events.isolate
     events.read.return_value = b'state'
@@ -1167,7 +1167,7 @@ def test_closed_execution_errors_and_retry(monkeypatch, method, stage):
 )
 def test_closed_calls_read_fresh_state(monkeypatch, first_method, second_method):
     """Create a new isolate from fresh state for each independent manager call."""
-    manager = TemporaryDirectoryManager('.')
+    manager = DirectoriesManager('.')
     first, second = Mock(), Mock()
     read = Mock(side_effect=[b'old', b'new'])
     get = Mock(side_effect=[first, second])

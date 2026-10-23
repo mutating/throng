@@ -7,7 +7,7 @@ import pytest
 
 @pytest.mark.parametrize(
     ('name', 'constructor_name'),
-    [('local', 'LocalManager'), ('temporary_directory', 'TemporaryDirectoryManager')],
+    [('local', 'LocalManager'), ('directories', 'DirectoriesManager')],
 )
 @pytest.mark.parametrize(
     'form',
@@ -74,7 +74,7 @@ def test_factory_forwards_settings_and_result(
 
 @pytest.mark.parametrize(
     ('name', 'constructor_name'),
-    [('local', 'LocalManager'), ('temporary_directory', 'TemporaryDirectoryManager')],
+    [('local', 'LocalManager'), ('directories', 'DirectoriesManager')],
 )
 @pytest.mark.parametrize('form', ['positional', 'keyword'])
 @pytest.mark.parametrize('packages', [None, [], ['first', 'second']])
@@ -102,7 +102,7 @@ def test_factory_forwards_packages(monkeypatch, name, constructor_name, form, pa
 
 @pytest.mark.parametrize(
     ('name', 'constructor_name'),
-    [('local', 'LocalManager'), ('temporary_directory', 'TemporaryDirectoryManager')],
+    [('local', 'LocalManager'), ('directories', 'DirectoriesManager')],
 )
 @pytest.mark.parametrize('exclude', [None, [], ['*.tmp']])
 @pytest.mark.parametrize('prepare', [None, [], ['first', 'second']])
@@ -120,7 +120,7 @@ def test_factory_does_not_cache_managers(monkeypatch, name, constructor_name, ex
 
 @pytest.mark.parametrize(
     ('name', 'constructor_name'),
-    [('local', 'LocalManager'), ('temporary_directory', 'TemporaryDirectoryManager')],
+    [('local', 'LocalManager'), ('directories', 'DirectoriesManager')],
 )
 @pytest.mark.parametrize('error_type', [RuntimeError, OSError])
 def test_factory_preserves_constructor_error(
@@ -142,7 +142,7 @@ def test_factory_preserves_constructor_error(
     constructor.assert_called_once_with('.', None, None, None)
 
 
-@pytest.mark.parametrize('name', ['local', 'temporary_directory'])
+@pytest.mark.parametrize('name', ['local', 'directories'])
 @pytest.mark.parametrize('existing', [False, True])
 @pytest.mark.parametrize('prepare', [None, ['first', 'second']])
 @pytest.mark.parametrize(
@@ -166,7 +166,7 @@ def test_factory_creation_is_lazy(  # noqa: PLR0913
     plugins = import_module('throng.extensions.plugins')
     manager_type = {
         'local': plugins.LocalManager,
-        'temporary_directory': plugins.TemporaryDirectoryManager,
+        'directories': plugins.DirectoriesManager,
     }[name]
     path = tmp_path if existing else tmp_path / 'missing'
     read, get, create = Mock(), Mock(), Mock()

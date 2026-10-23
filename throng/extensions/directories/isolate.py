@@ -12,11 +12,11 @@ from suby import SubprocessResult, run
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.meta import Benchmarks, IsolateResourcesDescription
 from throng.errors import CannotInstallDependencyError, InterruptedInstallationError
-from throng.extensions.temporary_directory.errors import DirectoryDoesNotExistError
-from throng.extensions.temporary_directory.read import read_directory
+from throng.extensions.directories.errors import DirectoryDoesNotExistError
+from throng.extensions.directories.read import read_directory
 
 
-class TemporaryDirectoryIsolate(AbstractIsolate):
+class DirectoriesIsolate(AbstractIsolate):
     def __init__(self, state: bytes, exclude: Optional[List[str]]) -> None:
         self.lock = Lock()
         self.exclude = exclude

@@ -26,14 +26,14 @@ def mypy_metadata_accepts_supported_values_and_access(isolate: AbstractIsolate, 
     Benchmarks(single, None)
     Benchmarks(None, multi)
     benchmarks = Benchmarks(single, multi)
-    IsolateResourcesDescription(False, None)
-    IsolateResourcesDescription(True, ())
-    IsolateResourcesDescription(True, ('peer',))
-    IsolateResourcesDescription(True, ('peer-a', 'peer-b'))
-    Resources(benchmarks, False, None)
-    Resources(benchmarks, True, ())
-    Resources(benchmarks, True, ('peer',))
-    resources = Resources(benchmarks, True, ('peer-a', 'peer-b'))
+    IsolateResourcesDescription(False, None, True)
+    IsolateResourcesDescription(True, (), False)
+    IsolateResourcesDescription(True, ('peer',), True)
+    IsolateResourcesDescription(True, ('peer-a', 'peer-b'), False)
+    Resources(benchmarks, False, None, True)
+    Resources(benchmarks, True, (), False)
+    Resources(benchmarks, True, ('peer',), True)
+    resources = Resources(benchmarks, True, ('peer-a', 'peer-b'), False)
     IsolateMeta('isolate', resources)
 
     reveal_type(isolate.meta)  # R: throng.abstracts.meta.IsolateMeta
@@ -42,6 +42,7 @@ def mypy_metadata_accepts_supported_values_and_access(isolate: AbstractIsolate, 
     reveal_type(isolate.meta.resources.benchmarks)  # R: throng.abstracts.meta.Benchmarks
     reveal_type(isolate.meta.resources.shared)  # R: builtins.bool
     reveal_type(isolate.meta.resources.shared_with)  # R: Union[builtins.tuple[builtins.str, ...], None]
+    reveal_type(isolate.meta.resources.internet)  # R: builtins.bool
     reveal_type(isolate.get_id())  # R: builtins.str
     reveal_type(isolate.get_benchmarks())  # R: throng.abstracts.meta.Benchmarks
     reveal_type(isolate.get_resources_description())  # R: throng.abstracts.meta.IsolateResourcesDescription
@@ -77,15 +78,17 @@ def mypy_metadata_rejects_incompatible_constructor_arguments(when: datetime, ben
     BenchmarkResult(1, when, '0.0.2', benchmarker=2)  # E: [arg-type]
     Benchmarks('invalid', None)  # E: [arg-type]
     Benchmarks(None, 'invalid')  # E: [arg-type]
-    IsolateResourcesDescription(1, None)  # E: [arg-type]
-    IsolateResourcesDescription(True, 'peer')  # E: [arg-type]
-    IsolateResourcesDescription(True, ['peer'])  # E: [arg-type]
-    IsolateResourcesDescription(True, (1,))  # E: [arg-type]
-    Resources(resources, True, None)  # E: [arg-type]
-    Resources(benchmarks, 1, None)  # E: [arg-type]
-    Resources(benchmarks, True, 'peer')  # E: [arg-type]
-    Resources(benchmarks, True, ['peer'])  # E: [arg-type]
-    Resources(benchmarks, True, (1,))  # E: [arg-type]
+    IsolateResourcesDescription(1, None, True)  # E: [arg-type]
+    IsolateResourcesDescription(True, 'peer', True)  # E: [arg-type]
+    IsolateResourcesDescription(True, ['peer'], True)  # E: [arg-type]
+    IsolateResourcesDescription(True, (1,), True)  # E: [arg-type]
+    IsolateResourcesDescription(True, None, 1)  # E: [arg-type]
+    Resources(resources, True, None, True)  # E: [arg-type]
+    Resources(benchmarks, 1, None, True)  # E: [arg-type]
+    Resources(benchmarks, True, 'peer', True)  # E: [arg-type]
+    Resources(benchmarks, True, ['peer'], True)  # E: [arg-type]
+    Resources(benchmarks, True, (1,), True)  # E: [arg-type]
+    Resources(benchmarks, True, None, 'yes')  # E: [arg-type]
     IsolateMeta(1, resources)  # E: [arg-type]
     IsolateMeta('isolate', benchmarks)  # E: [arg-type]
 
@@ -101,6 +104,7 @@ def mypy_metadata_rejects_frozen_field_assignment(meta: IsolateMeta, description
         meta.resources.benchmarks.single_core.number = 2  # E: [misc]
     meta.id = 'other'  # E: [misc]
     meta.resources.shared = False  # E: [misc]
+    meta.resources.internet = False  # E: [misc]
     meta.resources.benchmarks.single_core = None  # E: [misc]
     description.shared_with = ('other',)  # E: [misc]
     if meta.resources.shared_with is not None:
@@ -142,4 +146,4 @@ def mypy_metadata_provider_overrides_require_declared_return_types() -> None:
             return Benchmarks(None, None)
 
         def get_resources_description(self) -> IsolateResourcesDescription:
-            return IsolateResourcesDescription(False, None)
+            return IsolateResourcesDescription(False, None, True)

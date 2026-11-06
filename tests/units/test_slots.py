@@ -171,7 +171,7 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
             return Benchmarks(None, None)
 
         def get_resources_description(self):
-            return IsolateResourcesDescription(shared=False, shared_with=None)
+            return IsolateResourcesDescription(shared=False, shared_with=None, internet=False)
 
         def get_id(self):
             return self.id
@@ -267,7 +267,7 @@ def test_external_plugin_uses_explicit_get_token_for_creation_and_preparation(tm
             return Benchmarks(None, None)
 
         def get_resources_description(self):
-            return IsolateResourcesDescription(shared=False, shared_with=None)
+            return IsolateResourcesDescription(shared=False, shared_with=None, internet=False)
 
         def get_id(self):
             return self.id
@@ -327,7 +327,7 @@ def test_external_plugin_installs_slot_packages_before_preparation(tmp_path, sel
             return Benchmarks(None, None)
 
         def get_resources_description(self):
-            return IsolateResourcesDescription(shared=False, shared_with=None)
+            return IsolateResourcesDescription(shared=False, shared_with=None, internet=False)
 
         def get_id(self):
             return self.id
@@ -364,6 +364,70 @@ def test_external_plugin_installs_slot_packages_before_preparation(tmp_path, sel
         assert events[-1] == ('kill', isolate)
     finally:
         del throng['package_aware_test_plugin']
+
+
+@pytest.mark.parametrize(
+    ('shared', 'shared_with', 'internet'),
+    [
+        (False, None, False),
+        (True, None, True),
+        (True, (), False),
+        (True, ('peer-a', 'peer-b'), True),
+    ],
+)
+def test_external_plugin_exposes_resources_description_in_metadata(tmp_path, shared, shared_with, internet):
+    """Surface a plugin's arbitrary resources description unchanged in its metadata.
+
+    The metadata route runs through slot registration and the manager, not just
+    the abstract isolate, so a plugin author can rely on the whole description
+    (including internet access) reaching consumers without further plumbing.
+    """
+    class PluginIsolate(AbstractIsolate):
+        def __init__(self, state):
+            self.state = state
+            self.id = uuid4().hex
+
+        def _run(self, command, token=DefaultToken()):  # noqa: B008, ARG002
+            return SimpleRunResult(True)
+
+        def read(self):
+            return self.state
+
+        def kill(self):
+            pass
+
+        def install(self, *_dependencies):
+            pass
+
+        def get_benchmarks(self):
+            return Benchmarks(None, None)
+
+        def get_resources_description(self):
+            return IsolateResourcesDescription(shared, shared_with, internet)
+
+        def get_id(self):
+            return self.id
+
+    class PluginManager(AbstractManager):
+        def _get(self, state, token=DefaultToken()):  # noqa: B008, ARG002
+            return PluginIsolate(state)
+
+        def read(self):
+            return b'external snapshot'
+
+    @throng.plugin(unique=True)
+    def metadata_description_test_plugin(path='.', exclude=None, prepare=None):
+        return PluginManager(path, exclude, prepare)
+
+    try:
+        manager = throng['metadata_description_test_plugin'](tmp_path)['metadata_description_test_plugin']
+        isolate = manager.get(manager.read())
+
+        assert isolate.meta.resources.shared is shared
+        assert isolate.meta.resources.shared_with == shared_with
+        assert isolate.meta.resources.internet is internet
+    finally:
+        del throng['metadata_description_test_plugin']
 
 
 @pytest.mark.parametrize(

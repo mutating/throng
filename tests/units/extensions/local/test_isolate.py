@@ -38,6 +38,7 @@ def test_meta_reports_shared_resources_without_measurements(tmp_path):
             benchmarks=Benchmarks(None, None),
             shared=True,
             shared_with=None,
+            internet=True,
         ),
     )
 

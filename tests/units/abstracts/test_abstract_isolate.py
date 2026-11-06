@@ -442,7 +442,7 @@ def test_isolate_subclasses_need_no_preparation_constructor(explicit_init):
     """Construct isolates without preparation, including a no-argument super call."""
     methods = {name: Mock() for name in ('_run', 'read', 'kill', 'install')}
     methods['get_benchmarks'] = Mock(return_value=Benchmarks(None, None))
-    methods['get_resources_description'] = Mock(return_value=IsolateResourcesDescription(shared=False, shared_with=None))
+    methods['get_resources_description'] = Mock(return_value=IsolateResourcesDescription(shared=False, shared_with=None, internet=False))
     methods['get_id'] = Mock(return_value='test-isolate')
     if explicit_init:
         methods['__init__'] = lambda self: super(type(self), self).__init__()
@@ -459,17 +459,17 @@ def test_isolate_subclasses_need_no_preparation_constructor(explicit_init):
 
 
 @pytest.mark.parametrize(
-    ('benchmark_case', 'shared', 'shared_with'),
+    ('benchmark_case', 'shared', 'shared_with', 'internet'),
     [
-        ('none', False, None), ('both', False, None),
-        ('none', True, None), ('both', True, None),
-        ('none', True, ()), ('both', True, ()),
-        ('none', True, ('peer-b', 'peer-a')), ('both', True, ('peer-b', 'peer-a')),
-        ('single_only', True, None), ('multi_only', True, None),
-        ('zero_int_single', True, None), ('zero_float_multi', True, None),
+        ('none', False, None, False), ('both', False, None, True),
+        ('none', True, None, False), ('both', True, None, True),
+        ('none', True, (), False), ('both', True, (), True),
+        ('none', True, ('peer-b', 'peer-a'), False), ('both', True, ('peer-b', 'peer-a'), True),
+        ('single_only', True, None, False), ('multi_only', True, None, True),
+        ('zero_int_single', True, None, False), ('zero_float_multi', True, None, True),
     ],
 )
-def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_with):
+def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_with, internet):
     """Assemble complete or partial metadata without treating zero as missing data.
 
     Distinct measurements expose swapped fields; None and an empty peer tuple
@@ -509,7 +509,7 @@ def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_
             return benchmarks
 
         def get_resources_description(self):
-            return IsolateResourcesDescription(shared, shared_with)
+            return IsolateResourcesDescription(shared, shared_with, internet)
 
         def kill(self, *_args, **_kwargs):
             self.operations.append('unexpected work')
@@ -525,11 +525,13 @@ def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_
             benchmarks=benchmarks,
             shared=shared,
             shared_with=shared_with,
+            internet=internet,
         ),
     )
     assert actual.id == 'Mixed-Case:Isolate-A'
     assert actual.resources.shared is shared
     assert actual.resources.shared_with == shared_with
+    assert actual.resources.internet is internet
     assert actual.resources.benchmarks == benchmarks
     for actual_result, expected_result in (
         (actual.resources.benchmarks.single_core, expected_single),
@@ -579,7 +581,7 @@ def test_meta_provider_failure_and_recovery(provider_name, error_type):
         def get_resources_description(self):
             if provider_name == 'get_resources_description' and failure is not None:
                 raise failure
-            return IsolateResourcesDescription(True, ('peer',))
+            return IsolateResourcesDescription(True, ('peer',), True)
 
         def kill(self, *_args, **_kwargs):
             self.operations.append('unexpected work')
@@ -594,7 +596,7 @@ def test_meta_provider_failure_and_recovery(provider_name, error_type):
     assert isolate.operations == []
 
     failure = None
-    assert isolate.meta == IsolateMeta('recovering-isolate', Resources(benchmarks, True, ('peer',)))
+    assert isolate.meta == IsolateMeta('recovering-isolate', Resources(benchmarks, True, ('peer',), True))
     assert isolate.operations == []
 
 
@@ -630,10 +632,10 @@ def test_meta_does_not_mix_data_between_isolates():
 
         _run = read = install = kill
 
-    first = IndependentMetadataIsolate('first', first_benchmarks, IsolateResourcesDescription(True, ('peer-a',)))
-    second = IndependentMetadataIsolate('second', second_benchmarks, IsolateResourcesDescription(False, None))
-    expected_first = IsolateMeta('first', Resources(first_benchmarks, True, ('peer-a',)))
-    expected_second = IsolateMeta('second', Resources(second_benchmarks, False, None))
+    first = IndependentMetadataIsolate('first', first_benchmarks, IsolateResourcesDescription(True, ('peer-a',), True))
+    second = IndependentMetadataIsolate('second', second_benchmarks, IsolateResourcesDescription(False, None, False))
+    expected_first = IsolateMeta('first', Resources(first_benchmarks, True, ('peer-a',), True))
+    expected_second = IsolateMeta('second', Resources(second_benchmarks, False, None, False))
 
     saved_first = first.meta
     assert saved_first == expected_first

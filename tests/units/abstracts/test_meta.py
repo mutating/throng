@@ -13,7 +13,7 @@ from throng.abstracts.meta import (
 
 
 @pytest.mark.parametrize('operation', ['assign', 'delete'])
-@pytest.mark.parametrize('target_case', ['isolate_meta', 'resources', 'benchmarks', 'benchmark_result', 'resources_description'])
+@pytest.mark.parametrize('target_case', ['isolate_meta', 'resources', 'resources_internet', 'benchmarks', 'benchmark_result', 'resources_description'])
 def test_metadata_models_reject_field_mutation(target_case, operation):
     """Keep all metadata models immutable, including values reached through a snapshot.
 
@@ -22,11 +22,12 @@ def test_metadata_models_reject_field_mutation(target_case, operation):
     Inspect the original field afterwards to catch mutation before an error.
     """
     result = BenchmarkResult(12.5, datetime(2026, 10, 19, tzinfo=timezone.utc), '0.0.2')
-    meta = IsolateMeta('isolate-a', Resources(Benchmarks(result, None), True, ('peer-a',)))
-    description = IsolateResourcesDescription(True, ('peer-a',))
+    meta = IsolateMeta('isolate-a', Resources(Benchmarks(result, None), True, ('peer-a',), True))
+    description = IsolateResourcesDescription(True, ('peer-a',), True)
     target, field, replacement = {
         'isolate_meta': (meta, 'id', 'other-isolate'),
         'resources': (meta.resources, 'shared', False),
+        'resources_internet': (meta.resources, 'internet', False),
         'benchmarks': (meta.resources.benchmarks, 'single_core', None),
         'benchmark_result': (meta.resources.benchmarks.single_core, 'number', 99.5),
         'resources_description': (description, 'shared_with', ('other-peer',)),

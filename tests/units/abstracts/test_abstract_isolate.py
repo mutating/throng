@@ -459,43 +459,45 @@ def test_isolate_subclasses_need_no_preparation_constructor(explicit_init):
 
 
 @pytest.mark.parametrize(
-    ('benchmark_case', 'shared', 'shared_with', 'internet'),
+    ('benchmark_case', 'shared', 'shared_with', 'internet', 'equivalent'),
     [
-        ('none', False, None, False), ('both', False, None, True),
-        ('none', True, None, False), ('both', True, None, True),
-        ('none', True, (), False), ('both', True, (), True),
-        ('none', True, ('peer-b', 'peer-a'), False), ('both', True, ('peer-b', 'peer-a'), True),
-        ('single_only', True, None, False), ('multi_only', True, None, True),
-        ('zero_int_single', True, None, False), ('zero_float_multi', True, None, True),
+        ('none', False, None, False, None), ('both', False, None, True, 1.5),
+        ('none', True, None, False, 2.0), ('both', True, None, True, None),
+        ('none', True, (), False, 0.0), ('both', True, (), True, 1.5),
+        ('none', True, ('peer-b', 'peer-a'), False, None), ('both', True, ('peer-b', 'peer-a'), True, 2.0),
+        ('single_only', True, None, False, 1.5), ('multi_only', True, None, True, None),
+        ('zero_int_single', True, None, False, 0.0), ('zero_float_multi', True, None, True, 0.5),
     ],
 )
-def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_with, internet):
+def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_with, internet, equivalent):
     """Assemble complete or partial metadata without treating zero as missing data.
 
     Distinct measurements expose swapped fields; None and an empty peer tuple
-    retain their different meanings. Opaque mixed-case IDs and unsorted peers
-    must pass through unchanged. Define measurement expectations as raw tuples
-    before constructing any models: a faulty constructor must not silently
-    change both the actual and expected slots or turn a zero score into one.
-    A non-UTC timestamp with microseconds exposes precision loss; inspect tzinfo
-    separately because datetime equality compares instants rather than offsets.
-    Aliased operation methods record unexpected work or cleanup by the wrapper;
-    the inherited destructor runs later.
+    retain their different meanings; equivalents keep None distinct from zero.
+    Opaque mixed-case IDs and unsorted peers must pass through unchanged.
+    Define measurement expectations as raw tuples before constructing any
+    models: a faulty constructor must not silently change both the actual and
+    expected slots or turn a zero score into one. A non-UTC timestamp with
+    microseconds exposes precision loss; inspect tzinfo separately because
+    datetime equality compares instants rather than offsets. Aliased operation
+    methods record unexpected work or cleanup by the wrapper; the inherited
+    destructor runs later.
     """
     when = datetime(2026, 10, 19, 12, 3, 7, 123456, tzinfo=timezone(timedelta(hours=3)))
-    single = (123.5, when, '0.0.2', 'benchset')
-    multi = (456.5, when + timedelta(days=1), 'custom-3', 'other-suite')
+    single = (123.5, when, '0.0.2', 'benchset', 1.25)
+    multi = (456.5, when + timedelta(days=1), 'custom-3', 'other-suite', 2.5)
     expected_single, expected_multi = {
         'none': (None, None),
         'both': (single, multi),
         'single_only': (single, None),
         'multi_only': (None, multi),
-        'zero_int_single': ((0, when, '0.0.2', 'benchset'), None),
-        'zero_float_multi': (None, (0.0, when, '0.0.2', 'benchset')),
+        'zero_int_single': ((0, when, '0.0.2', 'benchset', 0.0), None),
+        'zero_float_multi': (None, (0.0, when, '0.0.2', 'benchset', 0.0)),
     }[benchmark_case]
     benchmarks = Benchmarks(
         BenchmarkResult(*expected_single) if expected_single is not None else None,
         BenchmarkResult(*expected_multi) if expected_multi is not None else None,
+        equivalent,
     )
 
     class MetadataIsolate(AbstractIsolate):
@@ -533,6 +535,7 @@ def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_
     assert actual.resources.shared_with == shared_with
     assert actual.resources.internet is internet
     assert actual.resources.benchmarks == benchmarks
+    assert actual.resources.benchmarks.equivalent == equivalent
     for actual_result, expected_result in (
         (actual.resources.benchmarks.single_core, expected_single),
         (actual.resources.benchmarks.multi_core, expected_multi),
@@ -546,6 +549,7 @@ def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_
                 actual_result.when,
                 actual_result.benchmarker_version,
                 actual_result.benchmarker,
+                actual_result.equivalent,
             ) == expected_result
             assert actual_result.when.tzinfo == expected_result[1].tzinfo
     assert isolate.operations == []

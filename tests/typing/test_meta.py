@@ -21,11 +21,11 @@ def mypy_metadata_accepts_supported_values_and_access(isolate: AbstractIsolate, 
     the actual inferred types, since assignments alone would also accept Any.
     These function bodies are checked by mypy rather than executed by pytest.
     """
-    single = BenchmarkResult(7, when, '0.0.2')
-    multi = BenchmarkResult(7.5, when, 'custom-3', benchmarker='other-suite')
+    single = BenchmarkResult(7, when, '0.0.2', equivalent=1.5)
+    multi = BenchmarkResult(7.5, when, 'custom-3', benchmarker='other-suite', equivalent=2.5)
     Benchmarks(single, None)
     Benchmarks(None, multi)
-    benchmarks = Benchmarks(single, multi)
+    benchmarks = Benchmarks(single, multi, 2.0)
     IsolateResourcesDescription(False, None, True)
     IsolateResourcesDescription(True, (), False)
     IsolateResourcesDescription(True, ('peer',), True)
@@ -40,6 +40,7 @@ def mypy_metadata_accepts_supported_values_and_access(isolate: AbstractIsolate, 
     reveal_type(isolate.meta.id)  # R: builtins.str
     reveal_type(isolate.meta.resources)  # R: throng.abstracts.meta.Resources
     reveal_type(isolate.meta.resources.benchmarks)  # R: throng.abstracts.meta.Benchmarks
+    reveal_type(isolate.meta.resources.benchmarks.equivalent)  # R: Union[builtins.float, None]
     reveal_type(isolate.meta.resources.shared)  # R: builtins.bool
     reveal_type(isolate.meta.resources.shared_with)  # R: Union[builtins.tuple[builtins.str, ...], None]
     reveal_type(isolate.meta.resources.internet)  # R: builtins.bool
@@ -54,6 +55,7 @@ def mypy_metadata_accepts_supported_values_and_access(isolate: AbstractIsolate, 
         reveal_type(result.when)  # R: datetime.datetime
         reveal_type(result.benchmarker_version)  # R: builtins.str
         reveal_type(result.benchmarker)  # R: builtins.str
+        reveal_type(result.equivalent)  # R: Union[builtins.float, None]
 
 
 @pytest.mark.mypy_testing
@@ -76,8 +78,10 @@ def mypy_metadata_rejects_incompatible_constructor_arguments(when: datetime, ben
     BenchmarkResult(1, 'invalid', '0.0.2')  # E: [arg-type]
     BenchmarkResult(1, when, 2)  # E: [arg-type]
     BenchmarkResult(1, when, '0.0.2', benchmarker=2)  # E: [arg-type]
+    BenchmarkResult(1, when, '0.0.2', equivalent='fast')  # E: [arg-type]
     Benchmarks('invalid', None)  # E: [arg-type]
     Benchmarks(None, 'invalid')  # E: [arg-type]
+    Benchmarks(None, None, 'fast')  # E: [arg-type]
     IsolateResourcesDescription(1, None, True)  # E: [arg-type]
     IsolateResourcesDescription(True, 'peer', True)  # E: [arg-type]
     IsolateResourcesDescription(True, ['peer'], True)  # E: [arg-type]
@@ -102,9 +106,11 @@ def mypy_metadata_rejects_frozen_field_assignment(meta: IsolateMeta, description
     """
     if meta.resources.benchmarks.single_core is not None:
         meta.resources.benchmarks.single_core.number = 2  # E: [misc]
+        meta.resources.benchmarks.single_core.equivalent = 3.0  # E: [misc]
     meta.id = 'other'  # E: [misc]
     meta.resources.shared = False  # E: [misc]
     meta.resources.internet = False  # E: [misc]
+    meta.resources.benchmarks.equivalent = 3.0  # E: [misc]
     meta.resources.benchmarks.single_core = None  # E: [misc]
     description.shared_with = ('other',)  # E: [misc]
     if meta.resources.shared_with is not None:

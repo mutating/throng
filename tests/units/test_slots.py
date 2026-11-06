@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from inspect import signature
 from pathlib import Path
 from unittest.mock import Mock
@@ -9,7 +10,11 @@ from cantok import DefaultToken, SimpleToken
 from throng import directories, local, throng
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.abstract_manager import AbstractManager
-from throng.abstracts.meta import Benchmarks, IsolateResourcesDescription
+from throng.abstracts.meta import (
+    BenchmarkResult,
+    Benchmarks,
+    IsolateResourcesDescription,
+)
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
 from throng.extensions.directories.manager import DirectoriesManager
@@ -428,6 +433,68 @@ def test_external_plugin_exposes_resources_description_in_metadata(tmp_path, sha
         assert isolate.meta.resources.internet is internet
     finally:
         del throng['metadata_description_test_plugin']
+
+
+@pytest.mark.parametrize('equivalent', [None, 0.0, 1.5])
+def test_external_plugin_exposes_benchmarks_in_metadata(tmp_path, equivalent):
+    """Surface a plugin's benchmark equivalents unchanged through the manager to metadata.
+
+    Per-benchmark equivalents travel inside their BenchmarkResult objects, while
+    the aggregate equivalent is a separate field. Both must reach consumers
+    through slot registration and the manager without further plumbing.
+    """
+    when = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    single = BenchmarkResult(10, when, '0.0.2', equivalent=1.25)
+    multi = BenchmarkResult(20, when, '0.0.2', benchmarker='other-suite', equivalent=2.5)
+    benchmarks = Benchmarks(single, multi, equivalent)
+
+    class PluginIsolate(AbstractIsolate):
+        def __init__(self, state):
+            self.state = state
+            self.id = uuid4().hex
+
+        def _run(self, command, token=DefaultToken()):  # noqa: B008, ARG002
+            return SimpleRunResult(True)
+
+        def read(self):
+            return self.state
+
+        def kill(self):
+            pass
+
+        def install(self, *_dependencies):
+            pass
+
+        def get_benchmarks(self):
+            return benchmarks
+
+        def get_resources_description(self):
+            return IsolateResourcesDescription(False, None, False)
+
+        def get_id(self):
+            return self.id
+
+    class PluginManager(AbstractManager):
+        def _get(self, state, token=DefaultToken()):  # noqa: B008, ARG002
+            return PluginIsolate(state)
+
+        def read(self):
+            return b'external snapshot'
+
+    @throng.plugin(unique=True)
+    def metadata_benchmarks_test_plugin(path='.', exclude=None, prepare=None):
+        return PluginManager(path, exclude, prepare)
+
+    try:
+        manager = throng['metadata_benchmarks_test_plugin'](tmp_path)['metadata_benchmarks_test_plugin']
+        isolate = manager.get(manager.read())
+
+        assert isolate.meta.resources.benchmarks == benchmarks
+        assert isolate.meta.resources.benchmarks.equivalent == equivalent
+        assert isolate.meta.resources.benchmarks.single_core == single
+        assert isolate.meta.resources.benchmarks.multi_core == multi
+    finally:
+        del throng['metadata_benchmarks_test_plugin']
 
 
 @pytest.mark.parametrize(

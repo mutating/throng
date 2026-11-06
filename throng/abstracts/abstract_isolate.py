@@ -23,6 +23,7 @@ class AbstractIsolate(ABC):
             benchmarks=benchmarks,
             shared=description.shared,
             shared_with=description.shared_with,
+            internet=description.internet,
         )
 
         return IsolateMeta(

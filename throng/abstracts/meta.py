@@ -9,12 +9,14 @@ class BenchmarkResult:
     when: datetime
     benchmarker_version: str
     benchmarker: str = 'benchset'
+    equivalent: Optional[float] = None
 
 
 @dataclass(frozen=True)
 class Benchmarks:
     single_core: Optional[BenchmarkResult]
     multi_core: Optional[BenchmarkResult]
+    equivalent: Optional[float] = None
 
 
 @dataclass(frozen=True)

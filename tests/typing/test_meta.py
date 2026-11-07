@@ -71,8 +71,8 @@ def mypy_metadata_rejects_unknown_fields(isolate: AbstractIsolate, result: Bench
 def mypy_metadata_rejects_incompatible_constructor_arguments(when: datetime, benchmarks: Benchmarks, resources: Resources) -> None:
     """Reject invalid field types without assuming dataclasses validate values at runtime.
 
-    Both peer annotations and both optional benchmark slots are independent
-    declarations, so each has its own deliberately invalid constructor call.
+    The peer, benchmark and equivalent fields are independent declarations, so
+    each has its own deliberately invalid constructor call.
     """
     BenchmarkResult('invalid', when, '0.0.2')  # E: [arg-type]
     BenchmarkResult(1, 'invalid', '0.0.2')  # E: [arg-type]

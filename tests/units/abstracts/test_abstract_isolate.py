@@ -442,7 +442,7 @@ def test_isolate_subclasses_need_no_preparation_constructor(explicit_init):
     """Construct isolates without preparation, including a no-argument super call."""
     methods = {name: Mock() for name in ('_run', 'read', 'kill', 'install')}
     methods['get_benchmarks'] = Mock(return_value=Benchmarks(None, None))
-    methods['get_resources_description'] = Mock(return_value=IsolateResourcesDescription(shared=False, shared_with=None))
+    methods['get_resources_description'] = Mock(return_value=IsolateResourcesDescription(shared=False, shared_with=None, internet=False))
     methods['get_id'] = Mock(return_value='test-isolate')
     if explicit_init:
         methods['__init__'] = lambda self: super(type(self), self).__init__()
@@ -459,43 +459,45 @@ def test_isolate_subclasses_need_no_preparation_constructor(explicit_init):
 
 
 @pytest.mark.parametrize(
-    ('benchmark_case', 'shared', 'shared_with'),
+    ('benchmark_case', 'shared', 'shared_with', 'internet', 'equivalent'),
     [
-        ('none', False, None), ('both', False, None),
-        ('none', True, None), ('both', True, None),
-        ('none', True, ()), ('both', True, ()),
-        ('none', True, ('peer-b', 'peer-a')), ('both', True, ('peer-b', 'peer-a')),
-        ('single_only', True, None), ('multi_only', True, None),
-        ('zero_int_single', True, None), ('zero_float_multi', True, None),
+        ('none', False, None, False, None), ('both', False, None, True, 1.5),
+        ('none', True, None, False, 2.0), ('both', True, None, True, None),
+        ('none', True, (), False, 0.0), ('both', True, (), True, 1.5),
+        ('none', True, ('peer-b', 'peer-a'), False, None), ('both', True, ('peer-b', 'peer-a'), True, 2.0),
+        ('single_only', True, None, False, 1.5), ('multi_only', True, None, True, None),
+        ('zero_int_single', True, None, False, 0.0), ('zero_float_multi', True, None, True, 0.5),
     ],
 )
-def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_with):
+def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_with, internet, equivalent):
     """Assemble complete or partial metadata without treating zero as missing data.
 
     Distinct measurements expose swapped fields; None and an empty peer tuple
-    retain their different meanings. Opaque mixed-case IDs and unsorted peers
-    must pass through unchanged. Define measurement expectations as raw tuples
-    before constructing any models: a faulty constructor must not silently
-    change both the actual and expected slots or turn a zero score into one.
-    A non-UTC timestamp with microseconds exposes precision loss; inspect tzinfo
-    separately because datetime equality compares instants rather than offsets.
-    Aliased operation methods record unexpected work or cleanup by the wrapper;
-    the inherited destructor runs later.
+    retain their different meanings; equivalents keep None distinct from zero.
+    Opaque mixed-case IDs and unsorted peers must pass through unchanged.
+    Define measurement expectations as raw tuples before constructing any
+    models: a faulty constructor must not silently change both the actual and
+    expected slots or turn a zero score into one. A non-UTC timestamp with
+    microseconds exposes precision loss; inspect tzinfo separately because
+    datetime equality compares instants rather than offsets. Aliased operation
+    methods record unexpected work or cleanup by the wrapper; the inherited
+    destructor runs later.
     """
     when = datetime(2026, 10, 19, 12, 3, 7, 123456, tzinfo=timezone(timedelta(hours=3)))
-    single = (123.5, when, '0.0.2', 'benchset')
-    multi = (456.5, when + timedelta(days=1), 'custom-3', 'other-suite')
+    single = (123.5, when, '0.0.2', 'benchset', 1.25)
+    multi = (456.5, when + timedelta(days=1), 'custom-3', 'other-suite', 2.5)
     expected_single, expected_multi = {
         'none': (None, None),
         'both': (single, multi),
         'single_only': (single, None),
         'multi_only': (None, multi),
-        'zero_int_single': ((0, when, '0.0.2', 'benchset'), None),
-        'zero_float_multi': (None, (0.0, when, '0.0.2', 'benchset')),
+        'zero_int_single': ((0, when, '0.0.2', 'benchset', 0.0), None),
+        'zero_float_multi': (None, (0.0, when, '0.0.2', 'benchset', 0.0)),
     }[benchmark_case]
     benchmarks = Benchmarks(
         BenchmarkResult(*expected_single) if expected_single is not None else None,
         BenchmarkResult(*expected_multi) if expected_multi is not None else None,
+        equivalent,
     )
 
     class MetadataIsolate(AbstractIsolate):
@@ -509,7 +511,7 @@ def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_
             return benchmarks
 
         def get_resources_description(self):
-            return IsolateResourcesDescription(shared, shared_with)
+            return IsolateResourcesDescription(shared, shared_with, internet)
 
         def kill(self, *_args, **_kwargs):
             self.operations.append('unexpected work')
@@ -525,12 +527,15 @@ def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_
             benchmarks=benchmarks,
             shared=shared,
             shared_with=shared_with,
+            internet=internet,
         ),
     )
     assert actual.id == 'Mixed-Case:Isolate-A'
     assert actual.resources.shared is shared
     assert actual.resources.shared_with == shared_with
+    assert actual.resources.internet is internet
     assert actual.resources.benchmarks == benchmarks
+    assert actual.resources.benchmarks.equivalent == equivalent
     for actual_result, expected_result in (
         (actual.resources.benchmarks.single_core, expected_single),
         (actual.resources.benchmarks.multi_core, expected_multi),
@@ -544,6 +549,7 @@ def test_meta_preserves_id_and_resource_metadata(benchmark_case, shared, shared_
                 actual_result.when,
                 actual_result.benchmarker_version,
                 actual_result.benchmarker,
+                actual_result.equivalent,
             ) == expected_result
             assert actual_result.when.tzinfo == expected_result[1].tzinfo
     assert isolate.operations == []
@@ -579,7 +585,7 @@ def test_meta_provider_failure_and_recovery(provider_name, error_type):
         def get_resources_description(self):
             if provider_name == 'get_resources_description' and failure is not None:
                 raise failure
-            return IsolateResourcesDescription(True, ('peer',))
+            return IsolateResourcesDescription(True, ('peer',), True)
 
         def kill(self, *_args, **_kwargs):
             self.operations.append('unexpected work')
@@ -594,7 +600,7 @@ def test_meta_provider_failure_and_recovery(provider_name, error_type):
     assert isolate.operations == []
 
     failure = None
-    assert isolate.meta == IsolateMeta('recovering-isolate', Resources(benchmarks, True, ('peer',)))
+    assert isolate.meta == IsolateMeta('recovering-isolate', Resources(benchmarks, True, ('peer',), True))
     assert isolate.operations == []
 
 
@@ -630,10 +636,10 @@ def test_meta_does_not_mix_data_between_isolates():
 
         _run = read = install = kill
 
-    first = IndependentMetadataIsolate('first', first_benchmarks, IsolateResourcesDescription(True, ('peer-a',)))
-    second = IndependentMetadataIsolate('second', second_benchmarks, IsolateResourcesDescription(False, None))
-    expected_first = IsolateMeta('first', Resources(first_benchmarks, True, ('peer-a',)))
-    expected_second = IsolateMeta('second', Resources(second_benchmarks, False, None))
+    first = IndependentMetadataIsolate('first', first_benchmarks, IsolateResourcesDescription(True, ('peer-a',), True))
+    second = IndependentMetadataIsolate('second', second_benchmarks, IsolateResourcesDescription(False, None, False))
+    expected_first = IsolateMeta('first', Resources(first_benchmarks, True, ('peer-a',), True))
+    expected_second = IsolateMeta('second', Resources(second_benchmarks, False, None, False))
 
     saved_first = first.meta
     assert saved_first == expected_first

@@ -4,7 +4,7 @@ from throng.errors import (
     PreparationCommandFailedError,
     ThrongError,
 )
-from throng.extensions.temporary_directory.errors import DirectoryDoesNotExistError
+from throng.extensions.directories.errors import DirectoryDoesNotExistError
 
 
 def test_destroyed_directory_has_specific_error_type():
@@ -19,5 +19,5 @@ def test_destroyed_directory_has_specific_error_type():
     )
     assert (
         DirectoryDoesNotExistError.__module__
-        == 'throng.extensions.temporary_directory.errors'
+        == 'throng.extensions.directories.errors'
     )

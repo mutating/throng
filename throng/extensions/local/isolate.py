@@ -38,6 +38,7 @@ class LocalIsolate(AbstractIsolate):
         return IsolateResourcesDescription(
             shared=True,
             shared_with=None,
+            internet=True,
         )
 
     def get_benchmarks(self) -> Benchmarks:

@@ -13,7 +13,7 @@ from unittest.mock import Mock
 import pytest
 from cantok import ConditionToken, DefaultToken, SimpleToken
 
-from throng import temporary_directory, throng
+from throng import directories, throng
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import (
     CannotInstallDependencyError,
@@ -22,7 +22,7 @@ from throng.errors import (
     NotSuccessfulRunError,
     PreparationCommandFailedError,
 )
-from throng.extensions.temporary_directory.errors import DirectoryDoesNotExistError
+from throng.extensions.directories.errors import DirectoryDoesNotExistError
 
 
 def run_python_command(source):
@@ -71,7 +71,7 @@ def test_packages_run_before_prepare_for_every_builtin_isolate(  # noqa: PLR0915
     module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
     allocated = []
 
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         def allocate():
             directory = TemporaryDirectory()
             allocated.append(directory)
@@ -141,7 +141,7 @@ def test_builtin_convenience_paths_install_packages_before_use(
     module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
     allocated = []
 
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         def allocate():
             temporary = TemporaryDirectory()
             allocated.append(temporary)
@@ -191,7 +191,7 @@ def test_failed_prepare_after_successful_package_install_cleans_up(
     module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
     allocated = []
 
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         def allocate():
             directory = TemporaryDirectory()
             allocated.append(directory)
@@ -279,7 +279,7 @@ def test_builtin_packages_execute_real_process_before_prepare_with_snapshot(
 
     assert (tmp_path / 'installed').exists() is (builtin_plugin_name == 'local')
     assert (tmp_path / 'ready').exists() is (builtin_plugin_name == 'local')
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         assert not isolate.path.exists()
 
 
@@ -296,7 +296,7 @@ def test_failed_package_stops_builtin_setup_and_keeps_pip_diagnostics(
     module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
     allocated = []
 
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         def allocate():
             directory = TemporaryDirectory()
             allocated.append(directory)
@@ -351,7 +351,7 @@ def test_cancelled_package_installation_cleans_up_builtin_isolate(  # noqa: PLR0
     module = import_module(f'throng.extensions.{builtin_plugin_name}.isolate')
     allocated = []
 
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         def allocate():
             directory = TemporaryDirectory()
             allocated.append(directory)
@@ -660,7 +660,7 @@ def test_closed_chain_setup_cancellation_ignores_user_exception_policy(  # noqa:
     assert creation_token is token
     isolate.kill.assert_called_once_with()
     assert not isolate.lock.locked()
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         assert not isolate.path.exists()
 
 
@@ -709,7 +709,7 @@ def test_closed_chain_cancellation_after_successful_setup(  # noqa: PLR0913
     assert creation_token is token
     isolate.kill.assert_called_once_with()
     assert not isolate.lock.locked()
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         assert not isolate.path.exists()
 
 
@@ -757,7 +757,7 @@ def test_empty_closed_chain_still_prepares_and_cleans_up(  # noqa: PLR0913
     assert creation_token is token
     isolate.kill.assert_called_once_with()
     assert not isolate.lock.locked()
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         assert not isolate.path.exists()
 
 
@@ -807,7 +807,7 @@ def test_closed_chain_retries_setup_with_a_fresh_token(
     for isolate, _ in created:
         isolate.kill.assert_called_once_with()
         assert not isolate.lock.locked()
-        if builtin_plugin_name == 'temporary_directory':
+        if builtin_plugin_name == 'directories':
             assert not isolate.path.exists()
 
 
@@ -836,7 +836,7 @@ def test_preparation_cancellation_cleans_up_builtin_isolate(
         return directory
 
     monkeypatch.setattr(module, 'run', execute)
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         monkeypatch.setattr(module, 'TemporaryDirectory', allocate)
     manager = throng(tmp_path, prepare=['first', 'second'])[builtin_plugin_name]
     created = record_created_isolates(monkeypatch, manager)
@@ -943,7 +943,7 @@ def test_cancellation_during_setup_command_prevents_use(  # noqa: PLR0915
     assert creation_token is token
     isolate.kill.assert_called_once_with()
     assert not isolate.lock.locked()
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         assert not isolate.path.exists()
         with pytest.raises(DirectoryDoesNotExistError):
             isolate.run('must not run after cleanup')
@@ -981,7 +981,7 @@ def test_scope_observes_cancellation_after_configuration(
     assert context.isolate is None
     isolate.kill.assert_called_once_with()
     assert not isolate.lock.locked()
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         assert not isolate.path.exists()
 
 
@@ -1024,7 +1024,7 @@ def test_configured_scopes_keep_tokens_independent(
     for isolate, _ in created:
         isolate.kill.assert_called_once_with()
         assert not isolate.lock.locked()
-        if builtin_plugin_name == 'temporary_directory':
+        if builtin_plugin_name == 'directories':
             assert not isolate.path.exists()
 
 
@@ -1059,7 +1059,7 @@ def test_scope_token_does_not_override_user_command_token(
     assert created[0][1] is scope_token
     isolate.kill.assert_called_once_with()
     assert not isolate.lock.locked()
-    if builtin_plugin_name == 'temporary_directory':
+    if builtin_plugin_name == 'directories':
         assert not isolate.path.exists()
 
 
@@ -1177,18 +1177,18 @@ def test_failed_prepare_removes_directory_before_propagating(
         'keyboard_interrupt': KeyboardInterrupt(),
         'system_exit': SystemExit(1),
     }.get(failure)
-    module = import_module('throng.extensions.temporary_directory.isolate')
+    module = import_module('throng.extensions.directories.isolate')
     original_run = module.run
-    directories = []
+    execution_directories = []
 
     def execute(command, **kwargs):
-        directories.append(Path(kwargs['directory']))
+        execution_directories.append(Path(kwargs['directory']))
         if interruption is not None:
             raise interruption
         return original_run(command, **kwargs)
 
     monkeypatch.setattr(module, 'run', execute)
-    manager = temporary_directory(tmp_path, prepare=[commands.get(failure, 'prepare')])
+    manager = directories(tmp_path, prepare=[commands.get(failure, 'prepare')])
     expected_type = (
         type(interruption)
         if failure in ('keyboard_interrupt', 'system_exit')
@@ -1211,11 +1211,11 @@ def test_failed_prepare_removes_directory_before_propagating(
                 assert caught.value.__cause__ is interruption
             else:
                 assert caught.value is interruption
-        assert len(directories) == 1
-        assert not directories[0].exists(), (
+        assert len(execution_directories) == 1
+        assert not execution_directories[0].exists(), (
             'Cleanup must happen before the caller receives the error.'
         )
     finally:
-        for directory in directories:
+        for directory in execution_directories:
             if directory.exists():
                 rmtree(directory)

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from inspect import signature
 from pathlib import Path
 from unittest.mock import Mock
@@ -6,14 +7,18 @@ from uuid import uuid4
 import pytest
 from cantok import DefaultToken, SimpleToken
 
-from throng import local, temporary_directory, throng
+from throng import directories, local, throng
 from throng.abstracts.abstract_isolate import AbstractIsolate
 from throng.abstracts.abstract_manager import AbstractManager
-from throng.abstracts.meta import Benchmarks, IsolateResourcesDescription
+from throng.abstracts.meta import (
+    BenchmarkResult,
+    Benchmarks,
+    IsolateResourcesDescription,
+)
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
+from throng.extensions.directories.manager import DirectoriesManager
 from throng.extensions.local.manager import LocalManager
-from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
 
 
 @pytest.mark.parametrize(
@@ -65,8 +70,8 @@ def test_slot_provides_builtin_managers(tmp_path, monkeypatch, form):
 
     assert isinstance(managers, dict)
     assert isinstance(managers['local'], LocalManager)
-    assert isinstance(managers['temporary_directory'], TemporaryDirectoryManager)
-    for name in ('local', 'temporary_directory'):
+    assert isinstance(managers['directories'], DirectoriesManager)
+    for name in ('local', 'directories'):
         assert managers[name].path == expected_path
         assert managers[name].exclude == expected_exclude
         assert managers[name].prepare == expected_prepare
@@ -81,11 +86,11 @@ def test_slot_provides_builtin_managers(tmp_path, monkeypatch, form):
 def test_slot_forwards_packages_lazily_to_builtin_managers(tmp_path, monkeypatch, form, setting, packages, configured):  # noqa: PLR0913
     """Keep the package setting intact without installing during slot construction."""
     local_install = Mock(side_effect=AssertionError('unexpected installation'))
-    temporary_install = Mock(side_effect=AssertionError('unexpected installation'))
+    directories_install = Mock(side_effect=AssertionError('unexpected installation'))
     monkeypatch.setattr('throng.extensions.local.isolate.LocalIsolate.install', local_install)
     monkeypatch.setattr(
-        'throng.extensions.temporary_directory.isolate.TemporaryDirectoryIsolate.install',
-        temporary_install,
+        'throng.extensions.directories.isolate.DirectoriesIsolate.install',
+        directories_install,
     )
     exclude = ['*.tmp'] if configured else None
     prepare = ['setup'] if configured else None
@@ -102,12 +107,12 @@ def test_slot_forwards_packages_lazily_to_builtin_managers(tmp_path, monkeypatch
             options['packages'] = packages
         managers = throng(tmp_path, **options)
 
-    for name in ('local', 'temporary_directory'):
+    for name in ('local', 'directories'):
         assert managers[name].packages is packages
         assert managers[name].exclude is exclude
         assert managers[name].prepare is prepare
     local_install.assert_not_called()
-    temporary_install.assert_not_called()
+    directories_install.assert_not_called()
 
 
 def test_slot_exposes_optional_packages_default():
@@ -171,7 +176,7 @@ def test_external_plugin_inherits_preparation_and_execution(tmp_path, selection,
             return Benchmarks(None, None)
 
         def get_resources_description(self):
-            return IsolateResourcesDescription(shared=False, shared_with=None)
+            return IsolateResourcesDescription(shared=False, shared_with=None, internet=False)
 
         def get_id(self):
             return self.id
@@ -267,7 +272,7 @@ def test_external_plugin_uses_explicit_get_token_for_creation_and_preparation(tm
             return Benchmarks(None, None)
 
         def get_resources_description(self):
-            return IsolateResourcesDescription(shared=False, shared_with=None)
+            return IsolateResourcesDescription(shared=False, shared_with=None, internet=False)
 
         def get_id(self):
             return self.id
@@ -327,7 +332,7 @@ def test_external_plugin_installs_slot_packages_before_preparation(tmp_path, sel
             return Benchmarks(None, None)
 
         def get_resources_description(self):
-            return IsolateResourcesDescription(shared=False, shared_with=None)
+            return IsolateResourcesDescription(shared=False, shared_with=None, internet=False)
 
         def get_id(self):
             return self.id
@@ -367,13 +372,139 @@ def test_external_plugin_installs_slot_packages_before_preparation(tmp_path, sel
 
 
 @pytest.mark.parametrize(
+    ('shared', 'shared_with', 'internet'),
+    [
+        (False, None, False),
+        (True, None, True),
+        (True, (), False),
+        (True, ('peer-a', 'peer-b'), True),
+    ],
+)
+def test_external_plugin_exposes_resources_description_in_metadata(tmp_path, shared, shared_with, internet):
+    """Surface a plugin's arbitrary resources description unchanged in its metadata.
+
+    The metadata route runs through slot registration and the manager, not just
+    the abstract isolate, so a plugin author can rely on the whole description
+    (including internet access) reaching consumers without further plumbing.
+    """
+    class PluginIsolate(AbstractIsolate):
+        def __init__(self, state):
+            self.state = state
+            self.id = uuid4().hex
+
+        def _run(self, command, token=DefaultToken()):  # noqa: B008, ARG002
+            return SimpleRunResult(True)
+
+        def read(self):
+            return self.state
+
+        def kill(self):
+            pass
+
+        def install(self, *_dependencies):
+            pass
+
+        def get_benchmarks(self):
+            return Benchmarks(None, None)
+
+        def get_resources_description(self):
+            return IsolateResourcesDescription(shared, shared_with, internet)
+
+        def get_id(self):
+            return self.id
+
+    class PluginManager(AbstractManager):
+        def _get(self, state, token=DefaultToken()):  # noqa: B008, ARG002
+            return PluginIsolate(state)
+
+        def read(self):
+            return b'external snapshot'
+
+    @throng.plugin(unique=True)
+    def metadata_description_test_plugin(path='.', exclude=None, prepare=None):
+        return PluginManager(path, exclude, prepare)
+
+    try:
+        manager = throng['metadata_description_test_plugin'](tmp_path)['metadata_description_test_plugin']
+        isolate = manager.get(manager.read())
+
+        assert isolate.meta.resources.shared is shared
+        assert isolate.meta.resources.shared_with == shared_with
+        assert isolate.meta.resources.internet is internet
+    finally:
+        del throng['metadata_description_test_plugin']
+
+
+@pytest.mark.parametrize('equivalent', [None, 0.0, 1.5])
+def test_external_plugin_exposes_benchmarks_in_metadata(tmp_path, equivalent):
+    """Surface a plugin's benchmark equivalents unchanged through the manager to metadata.
+
+    Per-benchmark equivalents travel inside their BenchmarkResult objects, while
+    the aggregate equivalent is a separate field. Both must reach consumers
+    through slot registration and the manager without further plumbing.
+    """
+    when = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    single = BenchmarkResult(10, when, '0.0.2', equivalent=1.25)
+    multi = BenchmarkResult(20, when, '0.0.2', benchmarker='other-suite', equivalent=2.5)
+    benchmarks = Benchmarks(single, multi, equivalent)
+
+    class PluginIsolate(AbstractIsolate):
+        def __init__(self, state):
+            self.state = state
+            self.id = uuid4().hex
+
+        def _run(self, command, token=DefaultToken()):  # noqa: B008, ARG002
+            return SimpleRunResult(True)
+
+        def read(self):
+            return self.state
+
+        def kill(self):
+            pass
+
+        def install(self, *_dependencies):
+            pass
+
+        def get_benchmarks(self):
+            return benchmarks
+
+        def get_resources_description(self):
+            return IsolateResourcesDescription(False, None, False)
+
+        def get_id(self):
+            return self.id
+
+    class PluginManager(AbstractManager):
+        def _get(self, state, token=DefaultToken()):  # noqa: B008, ARG002
+            return PluginIsolate(state)
+
+        def read(self):
+            return b'external snapshot'
+
+    @throng.plugin(unique=True)
+    def metadata_benchmarks_test_plugin(path='.', exclude=None, prepare=None):
+        return PluginManager(path, exclude, prepare)
+
+    try:
+        manager = throng['metadata_benchmarks_test_plugin'](tmp_path)['metadata_benchmarks_test_plugin']
+        isolate = manager.get(manager.read())
+
+        assert isolate.meta.resources.benchmarks == benchmarks
+        assert isolate.meta.resources.benchmarks.equivalent == equivalent
+        assert isolate.meta.resources.benchmarks.single_core == single
+        assert isolate.meta.resources.benchmarks.multi_core == multi
+    finally:
+        del throng['metadata_benchmarks_test_plugin']
+
+
+@pytest.mark.parametrize(
     ('relationship', 'first_plugin', 'second_plugin'),
     [
         ('same_manager', 'local', 'local'),
-        ('same_manager', 'temporary_directory', 'temporary_directory'),
+        ('same_manager', 'directories', 'directories'),
         ('different_managers', 'local', 'local'),
-        ('different_managers', 'temporary_directory', 'temporary_directory'),
-        ('different_plugins', 'local', 'temporary_directory'),
+        ('different_managers', 'directories', 'directories'),
+        ('different_plugins', 'local', 'directories'),
     ],
 )
 def test_builtin_metadata_uses_stable_distinct_ids(tmp_path, relationship, first_plugin, second_plugin):
@@ -407,7 +538,7 @@ def test_builtin_metadata_uses_stable_distinct_ids(tmp_path, relationship, first
 
 @pytest.mark.parametrize(
     ('name', 'factory'),
-    [('local', local), ('temporary_directory', temporary_directory)],
+    [('local', local), ('directories', directories)],
 )
 def test_builtin_registration_is_unique(name, factory):
     """Register each builtin factory once under its documented unique name."""
@@ -442,7 +573,7 @@ def test_slot_preserves_path_and_exclusion_values(
 
     managers = throng(path, exclude)
 
-    for name in ('local', 'temporary_directory'):
+    for name in ('local', 'directories'):
         assert managers[name].path == Path(path)
         assert managers[name].exclude == expected_exclude
 
@@ -451,13 +582,13 @@ def test_slot_calls_do_not_share_managers_or_settings(tmp_path):
     """Create independent managers without leaking earlier settings into defaults."""
     first = throng(tmp_path, ['*.tmp'], ['first'])
     second = throng(tmp_path, ['*.tmp'], ['first'])
-    for name in ('local', 'temporary_directory'):
+    for name in ('local', 'directories'):
         first[name].path = tmp_path / 'changed'
         first[name].exclude.append('extra')
         first[name].prepare.append('extra')
     defaults = throng()
 
-    for name in ('local', 'temporary_directory'):
+    for name in ('local', 'directories'):
         assert first[name] is not second[name]
         assert second[name].path == tmp_path
         assert second[name].exclude == ['*.tmp']
@@ -467,7 +598,7 @@ def test_slot_calls_do_not_share_managers_or_settings(tmp_path):
         assert defaults[name].prepare is None
 
 
-@pytest.mark.parametrize('plugin', ['local', 'temporary_directory'])
+@pytest.mark.parametrize('plugin', ['local', 'directories'])
 @pytest.mark.parametrize('mode', ['open', 'scope', 'run', 'chain'])
 @pytest.mark.parametrize('success', [False, True])
 def test_builtin_lifecycle_through_public_api(
@@ -518,7 +649,7 @@ def test_builtin_lifecycle_through_public_api(
     assert (tmp_path / 'source').read_bytes() == b'data'
 
 
-@pytest.mark.parametrize('plugin', ['local', 'temporary_directory'])
+@pytest.mark.parametrize('plugin', ['local', 'directories'])
 @pytest.mark.parametrize('closed', [False, True])
 def test_chained_commands_share_the_same_environment(
     tmp_path,

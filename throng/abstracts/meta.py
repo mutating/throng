@@ -9,12 +9,14 @@ class BenchmarkResult:
     when: datetime
     benchmarker_version: str
     benchmarker: str = 'benchset'
+    equivalent: Optional[float] = None
 
 
 @dataclass(frozen=True)
 class Benchmarks:
     single_core: Optional[BenchmarkResult]
     multi_core: Optional[BenchmarkResult]
+    equivalent: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -23,11 +25,13 @@ class IsolateResourcesDescription:
     Describe sharing with other isolates using their get_id() values.
 
     shared_with excludes this isolate's own ID. None means the neighbors are
-    unknown; an empty tuple means there are no neighbors.
+    unknown; an empty tuple means there are no neighbors. internet indicates
+    whether the isolate has network access.
     """
 
     shared: bool
     shared_with: Optional[Tuple[str, ...]]
+    internet: bool
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,7 @@ class Resources:
     benchmarks: Benchmarks
     shared: bool
     shared_with: Optional[Tuple[str, ...]]
+    internet: bool
 
 
 @dataclass(frozen=True)

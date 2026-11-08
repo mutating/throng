@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, Mock, call
 
 import pytest
 
-from throng.extensions.temporary_directory.read import read_directory
+from throng.extensions.directories.read import read_directory
 
 
 @pytest.mark.parametrize(
@@ -134,7 +134,7 @@ def test_crawler_receives_source_and_exclusions(tmp_path, monkeypatch, exclude):
     for path in paths:
         path.write_bytes(path.name.encode())
     crawler = Mock(return_value=iter(paths))
-    monkeypatch.setattr('throng.extensions.temporary_directory.read.Crawler', crawler)
+    monkeypatch.setattr('throng.extensions.directories.read.Crawler', crawler)
 
     with tarfile.open(fileobj=BytesIO(read_directory(tmp_path, exclude))) as archive:
         assert set(archive.getnames()) == {'first', 'second'}
@@ -212,9 +212,9 @@ def test_read_errors_propagate_and_close_open_archives(
         crawler.return_value = iterator
     else:
         archive.add.side_effect = [None] * (stage == 'second_file') + [error]
-    monkeypatch.setattr('throng.extensions.temporary_directory.read.Crawler', crawler)
+    monkeypatch.setattr('throng.extensions.directories.read.Crawler', crawler)
     monkeypatch.setattr(
-        'throng.extensions.temporary_directory.read.tarfile.open',
+        'throng.extensions.directories.read.tarfile.open',
         open_archive,
     )
 

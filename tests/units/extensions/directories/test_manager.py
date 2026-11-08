@@ -8,18 +8,18 @@ from cantok import DefaultToken, SimpleToken
 
 from throng.abstracts.results import SimpleRunResult
 from throng.errors import NotSuccessfulRunError, PreparationCommandFailedError
-from throng.extensions.temporary_directory.isolate import TemporaryDirectoryIsolate
-from throng.extensions.temporary_directory.manager import TemporaryDirectoryManager
+from throng.extensions.directories.isolate import DirectoriesIsolate
+from throng.extensions.directories.manager import DirectoriesManager
 
 
 @pytest.mark.parametrize('exclude', [None, [], ['cache/', '*.tmp', '!keep.tmp']])
 def test_read_delegates_source_settings(tmp_path, monkeypatch, exclude):
     """Read the configured source directory with the manager's exclusions."""
     expected_exclude = None if exclude is None else exclude.copy()
-    manager = TemporaryDirectoryManager(tmp_path, exclude)
+    manager = DirectoriesManager(tmp_path, exclude)
     read = Mock(return_value=b'\x00\xffstate')
     monkeypatch.setattr(
-        'throng.extensions.temporary_directory.manager.read_directory',
+        'throng.extensions.directories.manager.read_directory',
         read,
     )
 
@@ -41,16 +41,16 @@ def test_get_delegates_snapshot_without_reading_source(
     """Restore the supplied opaque snapshot without rereading the source directory."""
     expected_exclude = None if exclude is None else exclude.copy()
     expected_prepare = None if prepare is None else prepare.copy()
-    manager = TemporaryDirectoryManager('unread source', exclude, prepare)
+    manager = DirectoriesManager('unread source', exclude, prepare)
     constructor, read, read_source = Mock(), Mock(), Mock()
     constructor.return_value.chain.return_value = [SimpleRunResult(True) for _ in prepare or []]
     monkeypatch.setattr(
-        'throng.extensions.temporary_directory.manager.TemporaryDirectoryIsolate',
+        'throng.extensions.directories.manager.DirectoriesIsolate',
         constructor,
     )
     monkeypatch.setattr(manager, 'read', read)
     monkeypatch.setattr(
-        'throng.extensions.temporary_directory.manager.read_directory',
+        'throng.extensions.directories.manager.read_directory',
         read_source,
     )
 
@@ -70,15 +70,15 @@ def test_get_delegates_snapshot_without_reading_source(
 def test_get_passes_explicit_token_to_preparation_executor(tmp_path, monkeypatch):
     """Use the caller's token for each setup command in a real copied isolate."""
     execute = Mock(return_value=SimpleRunResult(True))
-    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', execute)
+    monkeypatch.setattr('throng.extensions.directories.isolate.run', execute)
     commands = ['first', 'second']
     expected_commands = commands.copy()
-    manager = TemporaryDirectoryManager(tmp_path, prepare=commands)
+    manager = DirectoriesManager(tmp_path, prepare=commands)
     token = SimpleToken()
 
     isolate = manager.get(manager.read(), token=token)
     try:
-        assert isinstance(isolate, TemporaryDirectoryIsolate)
+        assert isinstance(isolate, DirectoriesIsolate)
         assert execute.call_args_list == [
             call(command, token=token, catch_output=True, catch_exceptions=True, directory=isolate.path)
             for command in expected_commands
@@ -94,12 +94,12 @@ def test_delegate_error_is_preserved(tmp_path, monkeypatch, operation):
     """Keep the original cause when snapshot reading or isolate creation fails."""
     error = OSError('delegate failed')
     dependency = Mock(side_effect=error)
-    name = 'read_directory' if operation == 'read' else 'TemporaryDirectoryIsolate'
+    name = 'read_directory' if operation == 'read' else 'DirectoriesIsolate'
     monkeypatch.setattr(
-        f'throng.extensions.temporary_directory.manager.{name}',
+        f'throng.extensions.directories.manager.{name}',
         dependency,
     )
-    manager = TemporaryDirectoryManager(tmp_path)
+    manager = DirectoriesManager(tmp_path)
 
     with pytest.raises(OSError, match='delegate failed') as caught:
         getattr(manager, operation)(*(() if operation == 'read' else (b'state',)))
@@ -113,7 +113,7 @@ def test_same_snapshot_produces_independent_isolates(tmp_path, populated):
     """Keep directories, modifications and cleanup independent for each isolate."""
     if populated:
         (tmp_path / 'file').write_bytes(b'original')
-    manager = TemporaryDirectoryManager(tmp_path)
+    manager = DirectoriesManager(tmp_path)
     state = manager.read()
     first = manager.get(state)
     try:
@@ -147,7 +147,7 @@ def test_snapshot_survives_source_changes(tmp_path, change):
     directory.mkdir()
     source = directory / 'file'
     source.write_bytes(b'saved')
-    manager = TemporaryDirectoryManager(directory)
+    manager = DirectoriesManager(directory)
     state = manager.read()
     if change == 'modify_file':
         source.write_bytes(b'new')
@@ -168,7 +168,7 @@ def test_snapshot_survives_source_changes(tmp_path, change):
 def test_scope_discards_copy_and_keeps_source(tmp_path, fail_body):
     """Remove the temporary copy on every exit without changing source files."""
     (tmp_path / 'file').write_bytes(b'original')
-    manager = TemporaryDirectoryManager(tmp_path)
+    manager = DirectoriesManager(tmp_path)
     expectation = (
         pytest.raises(ValueError, match='body failed') if fail_body else nullcontext()
     )
@@ -190,13 +190,13 @@ def test_scope_discards_copy_and_keeps_source(tmp_path, fail_body):
 @pytest.mark.parametrize('exclude', [None, ['*.tmp']])
 def test_get_restores_state_before_preparation(tmp_path, monkeypatch, prepare, exclude):
     """Restore the snapshot and initialize all resources before executing preparation."""
-    isolate = object.__new__(TemporaryDirectoryIsolate)
+    isolate = object.__new__(DirectoriesIsolate)
     directory = Mock()
     directory.name = str(tmp_path / 'allocated')
     events = Mock()
     events.allocate.return_value = directory
     original_commands = None if prepare is None else prepare.copy()
-    manager = TemporaryDirectoryManager(tmp_path, exclude, prepare)
+    manager = DirectoriesManager(tmp_path, exclude, prepare)
     events.attach_mock(directory.cleanup, 'cleanup')
 
     def restore(state):
@@ -219,16 +219,16 @@ def test_get_restores_state_before_preparation(tmp_path, monkeypatch, prepare, e
 
     events.restore.side_effect = restore
     events.execute.side_effect = execute
-    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.TemporaryDirectory', events.allocate)
-    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', events.execute)
+    monkeypatch.setattr('throng.extensions.directories.isolate.TemporaryDirectory', events.allocate)
+    monkeypatch.setattr('throng.extensions.directories.isolate.run', events.execute)
     monkeypatch.setattr(isolate, 'set_state', events.restore)
 
     def create(state, exclusions):
-        TemporaryDirectoryIsolate.__init__(isolate, state, exclusions)
+        DirectoriesIsolate.__init__(isolate, state, exclusions)
         return isolate
 
     constructor = Mock(side_effect=create)
-    monkeypatch.setattr('throng.extensions.temporary_directory.manager.TemporaryDirectoryIsolate', constructor)
+    monkeypatch.setattr('throng.extensions.directories.manager.DirectoriesIsolate', constructor)
     try:
         assert manager.get(b'snapshot') is isolate
         constructor.assert_called_once_with(b'snapshot', exclude)
@@ -251,7 +251,7 @@ def test_get_restores_state_before_preparation(tmp_path, monkeypatch, prepare, e
 @pytest.mark.parametrize('failure', ['result', 'exception', 'interrupt', 'exit'])
 def test_failed_preparation_immediately_destroys_allocated_directory(tmp_path, monkeypatch, failure):
     """Clean up before propagation even if the caller retains the isolate and traceback."""
-    isolate = object.__new__(TemporaryDirectoryIsolate)
+    isolate = object.__new__(DirectoriesIsolate)
     directory = Mock()
     directory.name = str(tmp_path / 'allocated')
     events = Mock()
@@ -277,17 +277,17 @@ def test_failed_preparation_immediately_destroys_allocated_directory(tmp_path, m
 
     events.execute.side_effect = execute
     events.cleanup.side_effect = cleanup
-    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.TemporaryDirectory', events.allocate)
-    monkeypatch.setattr('throng.extensions.temporary_directory.isolate.run', events.execute)
+    monkeypatch.setattr('throng.extensions.directories.isolate.TemporaryDirectory', events.allocate)
+    monkeypatch.setattr('throng.extensions.directories.isolate.run', events.execute)
     monkeypatch.setattr(isolate, 'set_state', events.restore)
 
     def create(state, exclusions):
-        TemporaryDirectoryIsolate.__init__(isolate, state, exclusions)
+        DirectoriesIsolate.__init__(isolate, state, exclusions)
         return isolate
 
     constructor = Mock(side_effect=create)
-    monkeypatch.setattr('throng.extensions.temporary_directory.manager.TemporaryDirectoryIsolate', constructor)
-    manager = TemporaryDirectoryManager(tmp_path, prepare=['first', 'bad', 'last'])
+    monkeypatch.setattr('throng.extensions.directories.manager.DirectoriesIsolate', constructor)
+    manager = DirectoriesManager(tmp_path, prepare=['first', 'bad', 'last'])
     expected_type = type(error) if failure in ('interrupt', 'exit') else PreparationCommandFailedError
     try:
         with pytest.raises(expected_type) as caught:
